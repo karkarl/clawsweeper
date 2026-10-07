@@ -17,17 +17,11 @@ const sharedSections = shared.split(/\{\{\w+\}\}/).filter((section) => section.t
 const issue = readFileSync("prompts/review-issue.md", "utf8").trimEnd();
 const pr = readFileSync("prompts/review-pr.md", "utf8").trimEnd();
 
-test("production PR prompt leads with the engineering procedure before shared reporting", () => {
+test("production PR prompt leads with the engineering contract before canonical policy", () => {
   const target = item({ kind: "pull_request" });
   const prompt = reviewPromptForTest(target, {}, git);
   assert.ok(prompt.startsWith(`${pr}${sharedSections[0]}`));
   const stages = [
-    "## 1. Understand the before and after system",
-    "## 2. Review integrated behavior",
-    "## 3. Challenge candidate findings against source",
-    "## 4. Synthesize the whole patch",
-    "## 5. Assess proof and readiness under shared policy",
-    "# Shared review rules and reporting",
     "## Ground rules",
     "## Pull request review",
     "## Repository Policy",
@@ -92,6 +86,27 @@ for (const kind of ["issue", "pull_request"] as const) {
   });
 }
 
+test("engineering opening retains conditional PR policy in the assembled prompt", () => {
+  const template = reviewPromptTemplates().pull_request;
+  for (const authorAssociation of ["NONE", "MEMBER"]) {
+    for (const followUp of [false, true]) {
+      const target = item({ kind: "pull_request", authorAssociation });
+      const context = followUp ? { previousClawSweeperReview: { summary: "Prior review" } } : {};
+      const sections = reviewPromptSections(target, context);
+      const prompt = reviewPromptForTest(target, context, git);
+      assert.ok(prompt.startsWith(pr));
+      assert.ok(prompt.includes(renderReviewSections(template, sections).trim()));
+      for (const match of template.matchAll(
+        /<!-- review-section: (\w+) -->\n([\s\S]*?)<!-- \/review-section -->/g,
+      )) {
+        const section = match[1] as keyof typeof sections;
+        assert.equal(prompt.includes(match[2]!.trim()), sections[section], section);
+      }
+      assert.doesNotMatch(prompt, /\{\{\w+\}\}|<!-- \/?review-section/);
+    }
+  }
+});
+
 test("review policy hash includes both opening assets", () => {
   const procedures = {
     issue: readFileSync("prompts/review-issue.md", "utf8"),
@@ -110,4 +125,27 @@ test("review policy hash includes both opening assets", () => {
     procedures[kind] = original;
     assert.equal(reviewPolicyHash({}, sources), baseline);
   }
+});
+
+test("review policy hash retains canonical conditional templates and schema", () => {
+  const templates = { ...reviewPromptTemplates() };
+  const schema = reviewDecisionSchemaText();
+  assert.equal(schema, readFileSync("schema/clawsweeper-decision.schema.json", "utf8"));
+  const sources = {
+    reviewPromptTemplates: () => templates,
+    reviewDecisionSchemaText: () => schema,
+    reviewProcedureTemplate: (kind: "issue" | "pull_request") => (kind === "issue" ? issue : pr),
+  };
+  const baseline = reviewPolicyHash({}, sources);
+  for (const key of ["core", "issue", "pull_request", "closeReasons"] as const) {
+    const original = templates[key];
+    templates[key] += "\nChanged canonical policy.\n";
+    assert.notEqual(reviewPolicyHash({}, sources), baseline, key);
+    templates[key] = original;
+    assert.equal(reviewPolicyHash({}, sources), baseline);
+  }
+  assert.notEqual(
+    reviewPolicyHash({}, { ...sources, reviewDecisionSchemaText: () => schema + "\n" }),
+    baseline,
+  );
 });
