@@ -35,15 +35,6 @@ jobs:
         with:
           filter: blob:none
           persist-credentials: false
-          sparse-checkout: |
-            .github
-            dashboard-site
-            scripts/hydrate-state.ts
-            scripts/worker-blobs.ts
-            scripts/worker-records.ts
-            src/clawsweeper-args.ts
-            src/review-coverage-manifest.ts
-          sparse-checkout-cone-mode: false
 
       - uses: ./.github/actions/setup-pnpm
         with:
