@@ -112,7 +112,9 @@ async function runStatusSmoke(
       response.writeHead(401);
       response.end();
     } else if (request.url === "/") {
-      response.end('ClawSweeper Live System Overview <div id="worker-dialog"><a href="/bay">');
+      response.end(
+        '<title>Overview · ClawSweeper</title><a href="/queue/">Queue</a><a href="/bay">Bay</a>',
+      );
     } else if (request.url === "/bay") {
       response.setHeader("cache-control", "no-store");
       response.setHeader(

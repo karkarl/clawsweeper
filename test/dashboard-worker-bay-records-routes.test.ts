@@ -5875,7 +5875,6 @@ test("public triage pages expose aggregate counts without identity controls", as
     new Request("https://clawsweeper.openclaw.ai/pr-proof-triage"),
     {},
   );
-  const overviewPage = await worker.fetch(new Request("https://clawsweeper.openclaw.ai/"), {});
   const issueHtml = await issuePage.text();
   const proofHtml = await proofPage.text();
   for (const html of [issueHtml, proofHtml]) {
@@ -5907,7 +5906,6 @@ test("public triage pages expose aggregate counts without identity controls", as
   assert.match(issueHtml, /Queueable fixes without a no-new-fix-pr blocker/);
   assert.match(proofHtml, /Needs proof review/);
   assert.match(proofHtml, /Proof is requested but not yet marked sufficient or overridden/);
-  assert.match(await overviewPage.text(), /href="\/bay">OpenClaw Bay/);
 });
 
 async function renderPublicTriageApplication(
@@ -7574,11 +7572,10 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
     assert.equal(missing.status, 404, `${path} should remain unpublished`);
   }
 
-  for (const path of ["/", "/triage", "/pr-proof-triage"]) {
+  // The overview now comes from the static dashboard site; see dashboard-site-proxy.test.ts.
+  for (const path of ["/triage", "/pr-proof-triage"]) {
     const page = await worker.fetch(new Request(`https://clawsweeper.openclaw.ai${path}`), {});
-    const pageBody = await page.text();
-    assert.match(pageBody, /href="\/bay">OpenClaw Bay/);
-    if (path === "/") assert.match(pageBody, /setInterval\(load, 15000\)/);
+    assert.match(await page.text(), /href="\/bay">OpenClaw Bay/);
   }
 });
 

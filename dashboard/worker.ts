@@ -49,12 +49,12 @@ import {
 import { inlineProofParticipation, publicInlineProofCohorts } from "./inline-proof-telemetry.ts";
 import { bayHtml } from "./bay-page.ts";
 import {
-  dashboardHtml,
   issueTriagePageConfig,
   prProofTriagePageConfig,
   triageHtml,
   type DashboardEnv,
 } from "./dashboard-pages.ts";
+import { dashboardSiteResponse, isDashboardSitePath } from "./dashboard-site.ts";
 import { liveActivityBaySnapshot } from "./live-activity.ts";
 import { summarizeDashboardHealth } from "./dashboard-health.ts";
 import {
@@ -1399,7 +1399,11 @@ export default {
     if (url.pathname === "/api/status") return statusJson(request, env, ctx);
     if (url.pathname === "/api/triage") return triageJson(request, env, ctx);
     if (url.pathname === "/api/pr-proof-triage") return prProofTriageJson(request, env, ctx);
-    if (url.pathname === "/" || url.pathname === "/index.html") return html(dashboardHtml(env));
+    if (
+      (request.method === "GET" || request.method === "HEAD") &&
+      isDashboardSitePath(url.pathname)
+    )
+      return dashboardSiteResponse(request, env);
     if (url.pathname === "/bay") return demoHtml(bayHtml());
     if (url.pathname === "/bay-demo")
       return Response.redirect(new URL("/bay", url.origin).toString(), 308);

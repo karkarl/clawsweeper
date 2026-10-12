@@ -161,7 +161,34 @@ pagination, freshness, genuine GitHub errors, and the public Bay contract are
 unchanged.
 
 
-## What It Shows
+## Operator dashboard pages
+
+The pages at `/` (Overview, Throughput, Quality, Queue, Coverage, Repositories)
+are a static Astro site in `dashboard-site/`. The `Dashboard site` workflow
+(`.github/workflows/dashboard-site.yml`) rebuilds it every 15 minutes and
+publishes it to the Cloudflare Pages project `clawsweeper-dashboard`. This
+Worker serves those page paths from Pages (`dashboard/dashboard-site.ts`;
+override the origin with `DASHBOARD_SITE_ORIGIN`). A data refresh never
+redeploys this Worker, so webhooks, the queue Durable Object and `/api/*` are
+not restarted by it.
+
+Each build reads three sources:
+
+- canonical review records, hydrated read-only from this Worker's R2 snapshots
+  with `scripts/hydrate-state.ts`, aggregated from front matter only and
+  limited to repositories that GitHub reports as public;
+- the public `/api/exact-review-queue` and `/api/review-coverage` responses;
+- GitHub Actions run history for this repository, kept as per-hour buckets in
+  the workflow cache. Each run rereads the last three hours; a missing cache
+  bootstraps two days with the ClawSweeper app token, and the window then
+  grows to 30 days.
+
+The site shows no report bodies, author identities or free-text concerns.
+Local preview: in `dashboard-site/`, install dependencies, run
+`dashboard-site/scripts/build-data.ts` with `GITHUB_TOKEN`, `--records <records dir>` and
+`--state <state dir>`, then start the Astro dev server.
+
+## What the status API shows
 
 - bounded active-work counts and closed workflow, worker, status, stage, and
   outcome categories; arbitrary titles, targets, source links, keys, and job

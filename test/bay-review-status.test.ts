@@ -205,34 +205,6 @@ test("scheduled retries, queued attention and live workflows stay distinct from 
   assert.equal(helpers.bayReviewStatus({ ...base, outcome: "failure" }), null);
 });
 
-test("dashboard public Bay sample preserves safe review status and drops live diagnostics", async () => {
-  const { dashboardHtml } = await import("../dashboard/dashboard-pages.ts");
-  const script = dashboardHtml()
-    .split("<script>")
-    .find((part) => part.includes("BAY_REVIEW_FAILURE_EXPLANATIONS"))!
-    .split("</script>")[0]!;
-  const start = script.indexOf("  var BAY_REVIEW_FAILURE_EXPLANATIONS=");
-  const end = script.indexOf("function dashboardStatusSnapshot", start);
-  assert.ok(start >= 0 && end > start);
-  const helper = runInNewContext(
-    script.slice(start, end) + ";({dashboardPublicBayReferences,bayReviewStatus})",
-  );
-  const [stopped, live] = helper.dashboardPublicBayReferences([
-    { ...base, review_failure: { stage: "source_preparation", reason: "source_incompatible" } },
-    {
-      ...base,
-      item_number: 3,
-      source: "live",
-      review_failure: { stage: "workflow", reason: "workflow_failed" },
-    },
-  ]);
-  assert.equal(stopped.review_failure.reason, "source_incompatible");
-  assert.equal(helper.bayReviewStatus(stopped).type, "Stopped review");
-  assert.equal(live.review_failure, undefined);
-  assert.equal(live.queue_disposition, undefined);
-  assert.equal(helper.bayReviewStatus(live).type, "Live workflow");
-});
-
 test("parked publication or unclassified queue work is not called a stopped review", () => {
   const { helpers, rows, state, node } = harness();
   state.includeLegacyBatch = true;
