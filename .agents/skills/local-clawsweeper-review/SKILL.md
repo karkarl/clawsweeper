@@ -81,6 +81,12 @@ By default, `--local-range` reviews the clean checkout where the command was
 invoked. It does not manage or switch that checkout. Pass `--target-dir` when
 the branch to review is elsewhere.
 
+In a built source checkout, `node dist/clawsweeper-local.js review` is the
+local-only entrypoint for the same full committed-range engine. Its `--help`
+and `--version` paths do not load the review engine or invoke Codex. It does not
+provide diagnostics yet; `codex:local:check` remains the existing model smoke
+test. This entrypoint does not publish hosted action-ledger or cache metadata.
+
 Pass `--target-dir` when the operator wants to review an existing checkout or
 an issue.
 

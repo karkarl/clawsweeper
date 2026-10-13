@@ -880,6 +880,21 @@ pnpm run review -- --local-range \
   --base origin/main
 ```
 
+The built source checkout also provides a local-only entrypoint:
+
+```bash
+node dist/clawsweeper-local.js review --target-repo openclaw/clawsweeper --base origin/main
+node dist/clawsweeper-local.js --help
+node dist/clawsweeper-local.js --version
+```
+
+Both range commands use the same review engine, scanner, reports, history and
+output cleanup. The local entrypoint loads that engine only when review starts;
+help and version do not invoke Codex. Hosted admission, leases, action-ledger
+publication and cache metrics stay in the hosted command. This is a source
+checkout entrypoint, not an installable package. Diagnostics integration remains
+separate; `codex:local:check` still invokes its existing model smoke test.
+
 Without `--target-dir`, `--local-range` reviews the checkout where the command
 was invoked. Pass `--target-dir <path>` when invoking ClawSweeper from a
 different checkout. The range is `merge-base(<base>, HEAD)..HEAD`, includes
