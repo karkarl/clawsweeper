@@ -160,19 +160,14 @@ export function runPreparedReviewItem(
     decision = produceReviewOutput(
       outputBudget,
       {
-        paths: [
-          "prompt.md",
-          "json",
-          "1.codex.stdout.log",
-          "1.codex.stderr.log",
-          "review-thread.json",
-        ].map((suffix) => join(codexWorkDir, `${item.number}.${suffix}`)),
+        paths: ["prompt.md", "json", "1.codex.stdout.log", "1.codex.stderr.log"].map((suffix) =>
+          join(codexWorkDir, `${item.number}.${suffix}`),
+        ),
         maxBytes:
           itemOutputBudget.promptFileBytes +
           itemOutputBudget.resultFileBytes +
-          itemOutputBudget.streamFileBytes * 2 +
-          itemOutputBudget.threadStateBytes,
-        maxFiles: 5,
+          itemOutputBudget.streamFileBytes * 2,
+        maxFiles: 4,
       },
       () =>
         runCodex({

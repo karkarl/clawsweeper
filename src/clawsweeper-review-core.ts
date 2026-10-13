@@ -62,7 +62,6 @@ import {
   prepareOpenClawCodexSourceForReview,
 } from "./openclaw-codex-source.js";
 import { repositoryProfileFor } from "./repository-profiles.js";
-import { reviewProofCapabilityFromEnv } from "./review-proof-client.js";
 import { readBoundedReviewResult } from "./review-output-policy.js";
 import { appendReviewUsage } from "./review-usage.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
@@ -936,13 +935,6 @@ ${extra}
         retryable: false,
       });
     }
-    const reviewProof =
-      options.item.kind === "pull_request"
-        ? reviewProofCapabilityFromEnv(
-            options.item.repo,
-            nonBlankStringOrUndefined(asRecord(pull.head).sha) ?? "",
-          )
-        : undefined;
     const processStartedAt = Date.now();
     const result = runAgentProcess({
       scanSource,
@@ -977,14 +969,6 @@ ${extra}
       decisionRepair: {
         item: { repo: options.item.repo, number: options.item.number, kind: options.item.kind },
       },
-      ...(reviewProof
-        ? {
-            appServer: {
-              statePath: join(options.workDir, `${options.item.number}.review-thread.json`),
-              reviewProof,
-            },
-          }
-        : {}),
     });
     const processFinishedAt = Date.now();
     // Complete the best-effort local handoff before failure can terminate the process.
@@ -1006,7 +990,6 @@ ${extra}
       codexHome: codexEnv.CODEX_HOME,
       startedAt: processStartedAt,
       finishedAt: processFinishedAt,
-      ...(result.usage ? { usage: result.usage } : {}),
     });
     const dirtyAfter = openclawDirtyStatus(options.openclawDir);
     if (dirtyAfter) {
@@ -1071,7 +1054,7 @@ ${extra}
       );
       failureDetail = `${failureDetail}\nThe decision repair turn ran after the first final message failed validation: ${result.decisionRepairError}`;
     }
-    const plainNative = agentRunner(codexEnv) === "codex" && !reviewProof;
+    const plainNative = agentRunner(codexEnv) === "codex";
     const nativeFailureEligible =
       plainNative &&
       !hasOutput &&
