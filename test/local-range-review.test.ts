@@ -933,14 +933,6 @@ appendFileSync(${JSON.stringify(marker)}, JSON.stringify(process.argv.slice(2)) 
 console.log(process.argv.includes("rate_limit") ? '{"resources":{"core":{"remaining":5000}}}' : '[]');
 `,
     );
-    const gh = join(harness, process.platform === "win32" ? "gh.cmd" : "gh");
-    writeFileSync(
-      gh,
-      process.platform === "win32"
-        ? `@echo off\r\n"${process.execPath}" "${ghScript}" %*\r\n`
-        : `#!/bin/sh\nexec "${process.execPath}" "${ghScript}" "$@"\n`,
-      { mode: 0o755 },
-    );
     const result = spawnReview(
       LOCAL_CLI,
       [
@@ -960,7 +952,8 @@ console.log(process.argv.includes("rate_limit") ? '{"resources":{"core":{"remain
         timeout: 60_000,
         env: {
           ...process.env,
-          PATH: `${harness}${delimiter}${process.env.PATH ?? ""}`,
+          GH_BIN: process.execPath,
+          GH_BIN_ARGS: JSON.stringify([ghScript]),
           NODE_OPTIONS: [
             process.env.NODE_OPTIONS,
             `--import=${new URL("./local-entry-import-guard.mjs", import.meta.url).href}`,
