@@ -4,7 +4,7 @@
 - Owner: ClawSweeper local-runtime maintainers
 - Source of truth: `scripts/stage-local-package.mjs` and `src/clawsweeper-local.ts`
 - Last verified: P10b candidate based on `814fd214b4cd3da4b38f15e14e720e8d499e1ce0`
-- Update when: the local entrypoint, imports, workers, assets, or package format changes
+- Update when: the local entrypoint, imports, workers, assets, package format, or qualification matrix changes
 
 The private package candidate contains the full committed-range reviewer. It
 does not contain hosted admission, publication, or service state. Its package
@@ -50,9 +50,23 @@ Provider-free diagnostics remain deferred; `--diagnostics` currently fails
 with an explanatory message. The source checkout's `codex:local:check` command
 is a model smoke test, not a free diagnostic.
 
-Candidate qualification covers isolated installation and deterministic review
-fixtures. The committed-range suite expects 18 tests; Windows intentionally
-skips three POSIX or filesystem-specific cases. It does not establish a
-published release, global install, live provider access, or support across every
-platform. Keep the original target, reports, and operator authentication separate
-from the disposable install.
+CI runs the installed-package harness on Linux, Windows, and macOS with Node
+24. Each run builds and packs the candidate, installs it outside the checkout,
+and invokes the installed bin from a target path containing spaces and Unicode.
+On Windows, the committed-range fixtures use the real npm `.cmd` launcher;
+help, errors, retained reports, history, and preflight summaries use that same
+installed entry. The harness prints the actual Node version, OS, architecture,
+and tarball hash. Runner labels do not qualify other architectures or every
+Node 24 patch release.
+
+The committed-range suite expects 18 tests; Windows intentionally skips two
+POSIX Git fault wrappers and one case whose filenames Windows cannot represent.
+Scanner fixtures validate file types and excluded secret variables, and read
+materialized input files on Windows; permission-bit assertions apply only on
+POSIX. The Windows test fixture is a native executable built with Windows
+PowerShell 5; this compiler
+is a CI prerequisite, not a package requirement. Codex and scanner
+processes are deterministic fixtures, so these checks do not establish live
+provider access, native scanner coverage, a published release, or global install.
+Keep the original target, reports, and operator authentication separate from the
+disposable install.
