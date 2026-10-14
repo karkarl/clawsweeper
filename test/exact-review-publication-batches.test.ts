@@ -118,6 +118,110 @@ test("direct publication canonically stores, dedupes, and ratchets revisions", a
   );
 });
 
+test("direct publication upgrades legacy receipt identities once and preserves retries", async () => {
+  const storage = new TestStorage();
+  const original = new ExactReviewDirectPublicationStore(storage);
+  original.ensureSchemaSync();
+  const plan = await validateDirectPublicationPlan(directPlan("openclaw/openclaw#5", 1));
+  original.accept(plan, 1_000);
+  storage.exec(`
+    DROP INDEX exact_review_direct_publication_target_revision;
+    ALTER TABLE exact_review_direct_publication_plans DROP COLUMN canonical_target_key;
+    ALTER TABLE exact_review_direct_publication_plans DROP COLUMN fence_key;
+  `);
+
+  const upgraded = new ExactReviewDirectPublicationStore(storage);
+  upgraded.ensureSchemaSync();
+  const receipt = upgraded.get(plan.fenceKey, plan.revision);
+  assert.equal(receipt?.canonicalTargetKey, plan.canonicalTargetKey);
+  assert.equal(receipt?.fenceKey, plan.fenceKey);
+  assert.equal(upgraded.accept(plan, 1_001).outcome, "deduped");
+
+  const changes = storage.scalar("SELECT total_changes() AS value");
+  upgraded.ensureSchemaSync();
+  assert.equal(storage.scalar("SELECT total_changes() AS value"), changes);
+  assert.equal(upgraded.accept(plan, 1_002).outcome, "deduped");
+});
+
+test("tuple revisions include every section but exclude other tuples", async () => {
+  const storage = new TestStorage();
+  const store = new ExactReviewDirectPublicationStore(storage);
+  store.ensureSchemaSync();
+  store.accept(await validateDirectPublicationPlan(directPlan("openclaw/openclaw#1", 1)), 1_000);
+  store.accept(await validateDirectPublicationPlan(directPlan("openclaw/openclaw#2", 1)), 1_000);
+  storage.run(
+    "UPDATE exact_review_canonical_records SET revision = 9 WHERE item_id = 1 AND section = 'decision-packets'",
+  );
+  storage.run("UPDATE exact_review_canonical_records SET revision = 100 WHERE item_id = 2");
+  store.accept(await validateDirectPublicationPlan(directPlan("openclaw/openclaw#1", 2)), 1_001);
+  assert.equal(store.readCanonical("openclaw-openclaw", "items", 1)?.revision, 10);
+});
+
+test("record slugs retain tombstoned repositories and reflect later writes", async () => {
+  const storage = new TestStorage();
+  const store = new ExactReviewDirectPublicationStore(storage);
+  store.ensureSchemaSync();
+  assert.deepEqual(store.listRecordRepoSlugs(), []);
+  store.accept(await validateDirectPublicationPlan(directPlan("z/repo#1", 1)), 1_000);
+  store.accept(await validateDirectPublicationPlan(directPlan("a/repo#1", 1)), 1_000);
+  storage.run(
+    "UPDATE exact_review_record_export_index SET deleted = 1, digest = NULL WHERE repo_slug = 'z-repo'",
+  );
+  assert.deepEqual(store.listRecordRepoSlugs(), [
+    { repoSlug: "a-repo", revision: 6 },
+    { repoSlug: "z-repo", revision: 3 },
+  ]);
+  store.accept(await validateDirectPublicationPlan(directPlan("z/repo#2", 1)), 1_001);
+  assert.deepEqual(store.listRecordRepoSlugs(), [
+    { repoSlug: "a-repo", revision: 6 },
+    { repoSlug: "z-repo", revision: 9 },
+  ]);
+});
+
+test("record export merges section pages with both revision bounds and tombstones", async () => {
+  const storage = new TestStorage();
+  const store = new ExactReviewDirectPublicationStore(storage);
+  store.ensureSchemaSync();
+  store.accept(await validateDirectPublicationPlan(directPlan("a/repo#1", 1)), 1_000);
+  store.accept(await validateDirectPublicationPlan(directPlan("a/repo#2", 1)), 1_001);
+  const options = {
+    repoSlug: "a-repo",
+    sections: ["closed", "items", "closed"] as const,
+    sinceRevision: 1,
+    cursor: 0,
+    limit: 1,
+    maxBytes: 100_000,
+    maxSourceBytes: 100_000,
+    maxRecords: 1,
+  };
+  const first = store.exportRecords(options);
+  assert.deepEqual(
+    first.records.map((row) => [row.section, row.id, row.deleted]),
+    [["closed", "1", true]],
+  );
+  assert.equal(first.nextCursor, 2);
+  const second = store.exportRecords({ ...options, cursor: first.nextCursor! });
+  assert.deepEqual(
+    second.records.map((row) => [row.section, row.id, row.deleted]),
+    [["items", "2", false]],
+  );
+  assert.equal(second.nextCursor, 4);
+  const last = store.exportRecords({ ...options, cursor: second.nextCursor! });
+  assert.deepEqual(
+    last.records.map((row) => [row.section, row.id, row.deleted]),
+    [["closed", "2", true]],
+  );
+  assert.equal(last.nextCursor, null);
+  assert.deepEqual(store.exportRecords({ ...options, sections: [] }).records, []);
+  assert.equal(store.snapshotRecordCount("a-repo", 3), 1);
+  assert.deepEqual(store.snapshotRecordIdentities("a-repo", 3), [{ section: "items", id: "1" }]);
+  assert.equal(store.snapshotRecordCount("a-repo", 6), 2);
+  assert.deepEqual(store.snapshotRecordIdentities("a-repo", 6), [
+    { section: "items", id: "1" },
+    { section: "items", id: "2" },
+  ]);
+});
+
 test("direct publication makes section moves canonical with sibling and stale-sidecar tombstones", async () => {
   const storage = new TestStorage();
   const store = new ExactReviewDirectPublicationStore(storage);
@@ -526,6 +630,36 @@ test("publication batches atomically select ready items without duplicate active
   assert.equal(batches.fetch("batch-1", "wrong-worker", 1_500), null);
 });
 
+test("publication batch startup migrations write only rows that change", () => {
+  const storage = new TestStorage();
+  const batches = new ExactReviewPublicationBatchStore(storage);
+  batches.ensureSchemaSync();
+  batches.claim({
+    batchId: "batch-1",
+    leaseOwner: "worker-1",
+    leaseExpiresAt: 2_000,
+    now: 1_000,
+    maxItems: 2,
+    candidates,
+  });
+  const changes = () =>
+    Number([...storage.sql.exec("SELECT total_changes() AS n")][0]?.n ?? Number.NaN);
+  // An undersized pre-column cap and a missing fencing generation still get backfilled once.
+  storage.run(
+    "UPDATE exact_review_publication_batches SET configured_batch_size = 1 WHERE batch_id = ?",
+    "batch-1",
+  );
+  storage.run("DELETE FROM exact_review_publication_batch_generations");
+  const beforeBackfill = changes();
+  batches.ensureSchemaSync();
+  assert.equal(changes() - beforeBackfill, 3);
+  assert.equal(batches.fetch("batch-1", "worker-1", 1_500)?.configuredBatchSize, 2);
+  // Every later Durable Object start must not rewrite unchanged rows.
+  const beforeRestart = changes();
+  batches.ensureSchemaSync();
+  assert.equal(changes() - beforeRestart, 0);
+});
+
 test("publication batch store replays the exact lease for the same identity", () => {
   const storage = new TestStorage();
   const batches = new ExactReviewPublicationBatchStore(storage);
@@ -885,6 +1019,61 @@ test("bounded cleanup preserves active batches and open dead letters", () => {
   assert.equal(stats.leased, 1);
   assert.equal(stats.activeItems, 1);
   assert.equal(storage.scalar("SELECT COUNT(*) AS value FROM exact_review_queue_dead_letters"), 1);
+});
+
+test("publication history and cleanup merge terminal states with global timestamp and id ordering", () => {
+  const storage = new TestStorage();
+  const batches = new ExactReviewPublicationBatchStore(storage);
+  batches.ensureSchemaSync();
+  for (const [batchId, state, completedAt] of [
+    ["a-completed", "completed", 2_000],
+    ["b-expired", "expired", 2_000],
+    ["c-completed", "completed", 2_000],
+    ["d-expired", "expired", 2_000],
+    ["e-newer", "completed", 2_001],
+    ["active", "leased", null],
+  ] as const) {
+    storage.run(
+      `INSERT INTO exact_review_publication_batches
+         (batch_id, state, lease_owner, lease_expires_at, configured_batch_size,
+          attempt, created_at, completed_at)
+       VALUES (?, ?, 'worker', 20_000, 2, 1, 1_000, ?)`,
+      batchId,
+      state,
+      completedAt,
+    );
+    storage.run(
+      `INSERT INTO exact_review_publication_batch_items
+         (batch_id, item_key, revision, claim_generation, terminal_outcome)
+       VALUES (?, ?, 1, 1, 'lease_expired')`,
+      batchId,
+      `${batchId}-terminal`,
+    );
+  }
+  storage.run(
+    `INSERT INTO exact_review_publication_batch_items
+       (batch_id, item_key, revision, claim_generation)
+     VALUES ('active', 'active-unfinished', 1, 1)`,
+  );
+
+  assert.deepEqual(
+    batches.observability(3_000, 3).batches.map((batch) => batch.batchId),
+    ["active", "e-newer", "d-expired", "c-completed"],
+  );
+  const before = batches.stats(3_000, { completedTtlMs: 1_000, cleanupLimit: 0 });
+  assert.equal(before.reclaimedItemsRetained, 6);
+  assert.deepEqual(before.cleanup, { deletedThisPass: 0, eligibleRemaining: 4, limit: 0 });
+
+  const after = batches.stats(3_000, { completedTtlMs: 1_000, cleanupLimit: 2 });
+  assert.deepEqual(after.cleanup, { deletedThisPass: 2, eligibleRemaining: 2, limit: 2 });
+  assert.equal(after.reclaimedItemsRetained, 4);
+  assert.equal(after.activeItems, 1);
+  assert.equal(after.completed, 2);
+  assert.equal(after.expired, 1);
+  assert.deepEqual(
+    batches.observability(3_000, 10).batches.map((batch) => batch.batchId),
+    ["active", "e-newer", "d-expired", "c-completed"],
+  );
 });
 
 test("cleanup retains fencing generations when a batch id is reused", () => {
