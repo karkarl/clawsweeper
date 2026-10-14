@@ -1,0 +1,1 @@
+- Preserve native Codex review token counters when cache-write usage is unavailable, and distinguish full, partial, and missing usage in operator queries. Deploy receiver and query updates before enabling the producer.

@@ -2,14 +2,17 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHmac } from "node:crypto";
 import { once } from "node:events";
-import { mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { submitReviewUsageFile } from "../dist/review-usage-submit.js";
+import { appendReviewUsage } from "../dist/review-usage.js";
+import worker from "../dashboard/worker.ts";
+import type { ReviewUsageDataPoint } from "../dashboard/review-usage.ts";
 
 const RECORD = {
   schema: 1,
@@ -70,6 +73,46 @@ test("trusted submission signs the exact validated body with a short timeout", a
     `sha256=${createHmac("sha256", ENV.CLAWSWEEPER_WEBHOOK_SECRET).update(body).digest("hex")}`,
   );
   assert.deepEqual(timeouts, [1500]);
+});
+
+test("native rollout core usage reaches the authenticated Worker through the local handoff", async (t) => {
+  const path = fixture(t, "");
+  const codexHome = dirname(path);
+  const sessions = join(codexHome, "sessions");
+  mkdirSync(sessions);
+  const { cache_write_input_tokens: _cacheWrite, ...native } = RECORD.usage;
+  writeFileSync(
+    join(sessions, "rollout-native.jsonl"),
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "token_count", info: { total_token_usage: native } },
+    }) + "\n",
+  );
+  const { schema: _schema, run_id, run_attempt, usage: _usage, ...record } = RECORD;
+  appendReviewUsage({
+    record: { ...record, item_kind: "pull_request", outcome: "failed" },
+    codexHome,
+    startedAt: Date.now() - 1000,
+    finishedAt: Date.now() + 1000,
+    env: {
+      CLAWSWEEPER_REVIEW_USAGE_PATH: path,
+      GITHUB_RUN_ID: run_id,
+      GITHUB_RUN_ATTEMPT: String(run_attempt),
+    },
+  });
+  const points: ReviewUsageDataPoint[] = [];
+  t.mock.method(globalThis, "fetch", async (url: URL, init: RequestInit) => {
+    const response = await worker.fetch(new Request(url, init), {
+      CLAWSWEEPER_WEBHOOK_SECRET: ENV.CLAWSWEEPER_WEBHOOK_SECRET,
+      REVIEW_USAGE: { writeDataPoint: (point) => points.push(point) },
+    });
+    assert.equal(response.status, 202);
+    return response;
+  });
+  await submitReviewUsageFile({ path, env: ENV });
+  assert.equal(points.length, 1);
+  assert.equal(points[0]?.blobs[2], "failed");
+  assert.deepEqual(points[0]?.doubles, [1000, 200, 0, 100, 30, 12500, 0, 1]);
 });
 
 test("submission skips malformed, unknown-field, invalid-counter, and oversized lines", async (t) => {

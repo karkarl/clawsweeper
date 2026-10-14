@@ -10,47 +10,29 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { isRecord } from "./value-coerce.js";
-import type { ReviewUsageRecord } from "./review-usage-contract.js";
+import { isReviewTokenUsage, type ReviewUsageRecord } from "./review-usage-contract.js";
 
 export type ReviewTokenUsage = NonNullable<ReviewUsageRecord["usage"]>;
 const TOKEN_FIELDS = [
   "input_tokens",
   "cached_input_tokens",
-  "cache_write_input_tokens",
   "output_tokens",
   "reasoning_output_tokens",
 ] as const;
 const MAX_ROLLOUT_BYTES = 64 * 1024 * 1024;
 const TOKEN_COUNT_MARKER = Buffer.from('"token_count"');
 
-function tokenCount(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-
 export function parseReviewTokenUsage(value: unknown): ReviewTokenUsage | null {
   if (!isRecord(value)) return null;
-  const {
-    input_tokens,
-    cached_input_tokens,
-    cache_write_input_tokens,
-    output_tokens,
-    reasoning_output_tokens,
-  } = value;
-  if (
-    !tokenCount(input_tokens) ||
-    !tokenCount(cached_input_tokens) ||
-    !tokenCount(cache_write_input_tokens) ||
-    !tokenCount(output_tokens) ||
-    !tokenCount(reasoning_output_tokens)
-  )
-    return null;
-  return {
-    input_tokens,
-    cached_input_tokens,
-    cache_write_input_tokens,
-    output_tokens,
-    reasoning_output_tokens,
+  const usage = {
+    input_tokens: value.input_tokens,
+    cached_input_tokens: value.cached_input_tokens,
+    // Native Codex rollouts do not report cache writes; absence is not a measured zero.
+    cache_write_input_tokens: value.cache_write_input_tokens ?? null,
+    output_tokens: value.output_tokens,
+    reasoning_output_tokens: value.reasoning_output_tokens,
   };
+  return isReviewTokenUsage(usage) ? usage : null;
 }
 
 function* rolloutFiles(directory: string, depth = 0): Generator<string> {
@@ -152,7 +134,7 @@ export function readReviewRolloutUsage(options: {
       }
       total = total ? sumReviewTokenUsage([total, latest]) : latest;
     }
-    return total && Object.values(total).every(tokenCount) ? total : null;
+    return isReviewTokenUsage(total) ? total : null;
   } catch {
     // Missing, unreadable, or incomplete files cannot yield a trustworthy sum.
     return null;
@@ -167,7 +149,13 @@ export function sumReviewTokenUsage(usages: readonly ReviewTokenUsage[]): Review
     output_tokens: 0,
     reasoning_output_tokens: 0,
   };
-  for (const usage of usages) for (const field of TOKEN_FIELDS) total[field] += usage[field];
+  for (const usage of usages) {
+    for (const field of TOKEN_FIELDS) total[field] += usage[field];
+    total.cache_write_input_tokens =
+      total.cache_write_input_tokens === null || usage.cache_write_input_tokens === null
+        ? null
+        : total.cache_write_input_tokens + usage.cache_write_input_tokens;
+  }
   return total;
 }
 

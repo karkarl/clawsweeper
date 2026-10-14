@@ -14,7 +14,11 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
-import { appendReviewUsage, readReviewRolloutUsage } from "../dist/review-usage.js";
+import {
+  appendReviewUsage,
+  parseReviewTokenUsage,
+  readReviewRolloutUsage,
+} from "../dist/review-usage.js";
 
 const usage = {
   input_tokens: 100,
@@ -48,6 +52,55 @@ function fixture(t: TestContext) {
   const finishedAt = Date.now() + 1000;
   return { codexHome, directory, startedAt, finishedAt };
 }
+
+test("native Codex counters preserve core usage without inventing cache writes", () => {
+  const { cache_write_input_tokens: _cacheWrite, ...native } = usage;
+  assert.deepEqual(parseReviewTokenUsage({ ...native, total_tokens: 110 }), {
+    ...native,
+    cache_write_input_tokens: null,
+  });
+  assert.deepEqual(parseReviewTokenUsage({ ...native, cache_write_input_tokens: 0 }), {
+    ...native,
+    cache_write_input_tokens: 0,
+  });
+  for (const key of Object.keys(native)) {
+    for (const value of [undefined, null, -1, 0.5, "1", Number.MAX_SAFE_INTEGER + 1]) {
+      assert.equal(parseReviewTokenUsage({ ...native, [key]: value }), null, `${key}: ${value}`);
+    }
+  }
+  assert.equal(parseReviewTokenUsage({ ...native, cache_write_input_tokens: "0" }), null);
+});
+
+test("one unknown cache-write total propagates across otherwise measured sessions", (t) => {
+  const options = fixture(t);
+  const { cache_write_input_tokens: _cacheWrite, ...native } = usage;
+  const event = (total: unknown) =>
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "token_count", info: { total_token_usage: total } },
+    });
+  writeFileSync(join(options.directory, "rollout-native.jsonl"), event(native) + "\n");
+  writeFileSync(join(options.directory, "rollout-known.jsonl"), tokenEvent(200) + "\n");
+  assert.deepEqual(readReviewRolloutUsage(options), {
+    input_tokens: 300,
+    cached_input_tokens: 40,
+    cache_write_input_tokens: null,
+    output_tokens: 20,
+    reasoning_output_tokens: 10,
+  });
+  writeFileSync(join(options.directory, "rollout-unknown.jsonl"), '{"type":"session_meta"}\n');
+  assert.equal(readReviewRolloutUsage(options), null);
+});
+
+test("unsafe summed core counters invalidate a measured session aggregate", (t) => {
+  const options = fixture(t);
+  writeFileSync(
+    join(options.directory, "rollout-max.jsonl"),
+    tokenEvent(Number.MAX_SAFE_INTEGER) + "\n",
+  );
+  writeFileSync(join(options.directory, "rollout-extra.jsonl"), tokenEvent(1) + "\n");
+  assert.equal(readReviewRolloutUsage(options), null);
+});
 
 test("rollout usage takes each session's last cumulative total, not notification or repair-turn sums", (t) => {
   const options = fixture(t);

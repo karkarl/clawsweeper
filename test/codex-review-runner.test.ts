@@ -216,7 +216,6 @@ test("runCodex writes credential-free usage synchronously", () => {
   const usage = {
     input_tokens: 100,
     cached_input_tokens: 20,
-    cache_write_input_tokens: 30,
     output_tokens: 10,
     reasoning_output_tokens: 5,
   };
@@ -285,7 +284,7 @@ process.exit(1);
     assert.equal(lines.length, 1);
     const record: Record<string, unknown> = JSON.parse(lines[0]!);
     assert.equal(record.outcome, "failed");
-    assert.deepEqual(record.usage, usage);
+    assert.deepEqual(record.usage, { ...usage, cache_write_input_tokens: null });
     assert.ok(!("model" in record));
     assert.equal(decision.decision, "keep_open");
     assert.equal(decision.summary, "Keep open for maintainer follow-up.");
