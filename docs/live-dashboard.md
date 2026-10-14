@@ -159,7 +159,7 @@ unchanged.
 
 ## Operator dashboard pages
 
-The operator dashboard at `/` (Overview, Throughput, Quality, Queue, Operations,
+The operator dashboard at `/` (Overview, Agent performance, Throughput, Review assessments, Queue, Operations,
 Coverage, Repositories) is a static Astro site in `dashboard-site/`. The `Dashboard site`
 workflow (`.github/workflows/dashboard-site.yml`) rebuilds it every 15 minutes
 and publishes it to the Cloudflare Pages project `clawsweeper-dashboard`
@@ -213,6 +213,29 @@ and the review-corpus time. A page warns when its build is more than an hour old
 only with `refresh_corpus`). Unknown paths return the site's 404 page with
 status 404. Pull requests that touch `dashboard-site/` build the site from
 `dashboard-site/fixtures/dashboard.json`, without secrets or publishing.
+
+Metric labels distinguish latest-record snapshots from event history. Items refreshed
+count each item once on its latest review date; re-review moves that date and does
+not preserve historical daily throughput. Maintainer-authored items describes the
+item author, not who performed a review. Activity deltas are neutral. Model time
+and creation-to-latest-review age show sample counts across the stored corpus;
+neither measures first response or end-to-end service latency. Sweep run success
+shows its numerator, denominator and recorded days in the requested seven-day
+window; period comparison requires all seven days in both windows. Execution
+success does not establish decision correctness.
+
+Each detailed chart has one page owner. Agent performance owns execution timing,
+failed attempts by stage and repeated-claim investigation. Its run-time chart shows
+daily p50 and p90 together in duration units; these are run timings, separate from
+the model-only latest-review snapshot. Operations owns review flow, publication
+backlog, actual deliveries and batch handoff. Throughput owns volume and workflow
+activity; Coverage owns freshness. Overview keeps compact summaries and links.
+
+Publication pending excludes superseded revisions retained for command
+acknowledgements; those records do not establish failed delivery. Repeated-claim
+alerts count recorded claims, which may end before model execution. The bounded
+public target sample links to GitHub for revision and trigger investigation; it is
+not a ranking or proof of wasted execution.
 
 The site shows no report bodies, author identities or free-text concerns.
 Local preview: in `dashboard-site/`, install dependencies, run
@@ -1207,3 +1230,9 @@ stays parked with its exhausted attempt/recovery budgets; no review is restarted
 If a status writer retries after a token or write failure, it releases only its
 exact recorded successor coordination deferral before clearing the lease. A
 concurrently changed successor revision, reason, or deadline is not overwritten.
+
+Attention lists from a complete corpus refresh sort by reviewer-assigned priority
+(P0 through P3), then oldest review, with unranked items last. These are historical
+flags, not verified unresolved work. Cached corpora built before priority collection
+retain newest-first ordering until the next `refresh_corpus` run; discarded older
+rows cannot be reconstructed by sorting the cache.
