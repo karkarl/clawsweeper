@@ -51,6 +51,7 @@ import {
   codexHumanRetryHint,
   codexJsonlFailureDetail,
   codexTerminalErrorDetail,
+  CODEX_PROVIDER_CAPACITY_ERROR,
   isRetryableCodexErrorMessage,
   isRetryableCodexTransportError,
   isTerminalCodexErrorMessage,
@@ -430,11 +431,7 @@ ${extra}
       detail,
       isRetryableCodexTransportError(retryHint) ? retryHint : "",
     ]) {
-      if (
-        /rate limit reached|tokens per min|\bTPM\b|requests per min|\b429\b|temporarily unavailable|overloaded|please try again in \d+(?:ms|s)/i.test(
-          transientDetail,
-        )
-      ) {
+      if (CODEX_PROVIDER_CAPACITY_ERROR.test(transientDetail)) {
         return "retryable codex transport failure (capacity)";
       }
       if (

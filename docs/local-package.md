@@ -3,7 +3,7 @@
 - Status: active development and qualification guide; no package release
 - Owner: ClawSweeper local-runtime maintainers
 - Source of truth: `scripts/stage-local-package.mjs` and `src/clawsweeper-local.ts`
-- Last verified: P10b candidate based on `814fd214b4cd3da4b38f15e14e720e8d499e1ce0`
+- Last verified: P10b integration candidate based on `bdca1a7a5f2723fc3948b8d8bf8a87614dcff43a`
 - Update when: the local entrypoint, imports, workers, assets, or package format changes
 
 The private package candidate contains the full committed-range reviewer. It
