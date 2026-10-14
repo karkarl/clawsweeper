@@ -1,6 +1,7 @@
 import raw from "../data/dashboard.json";
 import type { Operations, OperationsHour } from "../../scripts/operations.ts";
 import { duration, label } from "./format";
+import { reviewTimingWindow, summarizeRunWindow } from "./run-window.ts";
 
 // The build snapshot (scripts/build-data.ts). Typed loosely at the edge; every page reads
 // through the view helpers below so presentation never learns the raw shapes.
@@ -20,6 +21,7 @@ export interface Item {
   proof: string;
   security: string;
   maintainerKind: string | null;
+  triagePriority?: string | null;
 }
 
 export interface Repo {
@@ -147,15 +149,10 @@ const runDays: {
   reviewP50: day.reviewSeconds?.p50 ?? null,
   reviewP90: day.reviewSeconds?.p90 ?? null,
 }));
-const completeRunDays = runDays.slice(0, -1);
+const completeRunDays = runDays.filter((day) => day.date < asOf.actions.slice(0, 10));
 
-function runRate(days: number, offset = 0) {
-  const slice = lastDays(completeRunDays, days, offset);
-  if (offset && slice.length < days) return null;
-  const total = sum(slice.map((day) => day.total));
-  const success = sum(slice.map((day) => day.success));
-  return total ? success / total : null;
-}
+const currentRunWindow = summarizeRunWindow(runDays, asOf.actions, 7);
+const previousRunWindow = summarizeRunWindow(runDays, asOf.actions, 7, 7);
 
 export const kpis = {
   reviews7d: periodDelta(reviewDays, 7),
@@ -163,13 +160,22 @@ export const kpis = {
   closes7d: periodDelta(closeDays, 7),
   closes30d: periodDelta(closeDays, 30),
   closedElsewhere7d: periodDelta(elsewhereDays, 7),
-  runSuccess7d: { current: runRate(7), previous: runRate(7, 7) },
+  runSuccess7d: {
+    ...currentRunWindow,
+    current: currentRunWindow.rate,
+    previous:
+      currentRunWindow.recordedDays === 7 && previousRunWindow.recordedDays === 7
+        ? previousRunWindow.rate
+        : null,
+  },
   // Seconds; null when the corpus has no samples.
   reviewTime: {
+    count: corpus.timings.codexMs.count as number,
     p50: scaled(corpus.timings.codexMs.p50, 1 / 1000),
     p90: scaled(corpus.timings.codexMs.p90, 1 / 1000),
   },
-  firstReview: {
+  latestReviewAge: {
+    count: corpus.timings.createdToReviewHours.count as number,
     p50: scaled(corpus.timings.createdToReviewHours.p50, 3600),
     p90: scaled(corpus.timings.createdToReviewHours.p90, 3600),
   },
@@ -177,6 +183,7 @@ export const kpis = {
 
 export const runs = {
   days: completeRunDays,
+  timings: reviewTimingWindow(runDays, asOf.actions, 30),
   failureRate: completeRunDays.map((day) => ({
     date: day.date,
     value: day.total ? day.failure / day.total : null,
@@ -211,6 +218,7 @@ export const live = {
   runaway: object(queue.review_runaway_health),
   feed: object(queue.scheduled_feed),
   pressure: object(queue.pressure),
+  publicationHandoff: object(queue.publication_handoff),
   review: reviewLane as Json,
   publication: publicationLane as Json,
   pending: reviewLane.pending as number,
@@ -218,7 +226,7 @@ export const live = {
   parked: (reviewLane.parked + publicationLane.parked) as number,
   capacity: reviewLane.capacity as number,
   active: reviewLane.active as number,
-  oldestPendingSeconds: reviewLane.oldest_pending_age_seconds as number | null,
+  oldestPendingSeconds: (reviewLane.oldest_pending_age_seconds ?? null) as number | null,
   parkedReasons: entries({ ...reviewLane.parked_reasons }, ["unknown"]),
   publicationParked: entries({ ...publicationLane.parked_reasons }, ["unknown"]),
   backoffReasons: entries({ ...reviewLane.backoff_reasons }),
@@ -264,12 +272,12 @@ export const healthChecks: HealthCheck[] = [
     };
   })(),
   (() => {
-    const name = "Runaway reviews";
+    const name = "Repeated review claims";
     const tip =
-      "Items reviewed again and again in a short window. Usually a revision loop or a feed bug.";
+      "Targets claimed repeatedly for review. Claims may end before model execution; revision and trigger attribution is unavailable, so repetition alone does not establish waste.";
     const runaway = live.runaway;
     if (!runaway || runaway.status === "unknown") return unavailable(name, tip);
-    const detail = `over ${runaway.threshold_reviews_per_day} reviews in ${runaway.window_hours}h`;
+    const detail = `over ${runaway.threshold_reviews_per_day} claims in ${runaway.window_hours}h`;
     if (runaway.status === "healthy")
       return { name, ok: true, value: "Healthy", detail, tip, alert: null };
     return {
@@ -278,7 +286,7 @@ export const healthChecks: HealthCheck[] = [
       value: `${runaway.runaway_items} items`,
       detail,
       tip,
-      alert: `${runaway.runaway_items} items over ${runaway.threshold_reviews_per_day} reviews/day`,
+      alert: `${runaway.runaway_items} targets over ${runaway.threshold_reviews_per_day} claims in ${runaway.window_hours}h`,
     };
   })(),
   (() => {
@@ -353,6 +361,8 @@ export const closedElsewhereTotal = corpus.closedElsewhere.total as number;
 export const recommendedCloseReasons = entries({ ...distributions.closeReasons }, ["none"]);
 export const repos: Repo[] = [...corpus.repos].sort((a: Repo, b: Repo) => b.records - a.records);
 
+export const attentionPriorityOrdered = corpus.attentionOrder === "reviewer-priority-age-v1";
+
 export const lists = {
   stale: corpus.lists.stale as Item[],
   security: corpus.lists.security as Item[],
@@ -385,9 +395,8 @@ const hourly = (pick: (hour: OperationsHour) => number | null) =>
   opsHours.map((hour) => ({ date: hour.hour, value: pick(hour) }));
 const majorIncidents = operations.incidents.filter((incident) => incident.minutes >= 10);
 const { observed: handoffObserved, unhealthy: handoffUnhealthy } = operations.handoffSamples;
-const offered =
-  sum(known(completeHours.map((hour) => hour.shed))) +
-  sum(known(completeHours.map((hour) => hour.enqueued)));
+const reviewOffers = operations.reviewOffers;
+const offered = reviewOffers ? reviewOffers.accepted + reviewOffers.shed : null;
 const failureKinds = [
   ...new Set([
     ...Object.keys(operations.apply.day.failures),
@@ -406,7 +415,8 @@ export const ops = {
     // observed: at least one hour with known counter growth; a measured zero is still a value.
     observed: completeHours.some((hour) => hour.shed !== null),
     week: sum(known(completeHours.map((hour) => hour.shed))),
-    share: offered ? sum(known(completeHours.map((hour) => hour.shed))) / offered : null,
+    offers: offered,
+    share: offered ? reviewOffers!.shed / offered : null,
   },
   handoff: {
     // Share of observed 5-minute samples; unobserved time is unknown, not healthy.
@@ -419,6 +429,7 @@ export const ops = {
   },
   series: {
     completed: hourly((hour) => hour.completed),
+    published: hourly((hour) => hour.published),
     shed: hourly((hour) => hour.shed),
     reviewPending: hourly((hour) => hour.reviewPending),
     publicationPending: hourly((hour) => hour.publicationPending),

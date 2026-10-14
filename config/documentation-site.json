@@ -31,6 +31,7 @@
         "operator-configuration.md",
         "private-inference.md",
         "live-dashboard.md",
+        "agent-performance-metrics.md",
         "openclaw-event-hooks.md",
         "state-storage.md",
         "action-ledger.md",
@@ -44,6 +45,11 @@
     }
   ],
   "noncanonical": [
+    {
+      "path": "review-authority.md",
+      "lifecycle": "proposed",
+      "banner": "The role classifier is inert. This integration contract does not change current admission or command authority."
+    },
     {
       "path": "portable-review-receipt.md",
       "lifecycle": "proposed",

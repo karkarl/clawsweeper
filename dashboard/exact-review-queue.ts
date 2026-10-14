@@ -123,6 +123,7 @@ import {
   ExactReviewLifecycleProjectionStore,
   lifecycleState,
   parseDurableLifecycleAuditCursor,
+  sameCommandStatusAddress,
   sameLifecycleProducerLineage,
   type ExactReviewLifecycleProjection,
   type LifecycleTerminalDisposition,
@@ -171,6 +172,7 @@ import {
   exactReviewDecisionAtLiveHead,
   exactReviewDecisionCanSupersedeReview,
   exactReviewDecisionHasCommandContext,
+  exactReviewDecisionWithoutCommand,
   exactReviewCommandObligationSurvives,
   exactReviewCommandVersionIsOlder,
   exactReviewDecisionFrom,
@@ -183,10 +185,12 @@ import {
   exactReviewPublicationLineageKey,
   exactReviewPublicationProducerIsNewer,
   exactReviewPublicationRevision,
+  exactReviewQueueCommandStatusAddress,
   exactReviewQueueHasCommandContext,
   exactReviewQueueHasStaleLiveHead,
   exactReviewQueueIsBatchablePublication,
   exactReviewQueueIsPublication,
+  exactReviewSameVerifiedCommand,
   exactReviewSourceAuthorityReservationFrom,
   exactReviewSourceAuthorityReservationKey,
   exactReviewSourceAuthorityWatermark,
@@ -194,6 +198,7 @@ import {
   isExactReviewQueueTargetEnabled,
   isImmediateExactReviewDecision,
   isLowPriorityExactReviewDecision,
+  isSheddableExactReviewRecovery,
   mergePendingExactReviewDecision,
   type ExactReviewBranchAuthorityReservation,
   type ExactReviewDecision,
@@ -829,6 +834,14 @@ const EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_BASE_MS = 15_000;
 const EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_MAX_MS = 15 * 60_000;
 const EXACT_REVIEW_QUEUE_META_TABLE = "exact_review_queue_meta";
 const EXACT_REVIEW_QUEUE_ITEM_TABLE = "exact_review_queue_items";
+const DIRECT_LIFECYCLE_REQUEUE_DELIVERY_PREFIX = "direct-lifecycle-requeue:";
+const HELD_PUBLICATION_REQUEUE_DELIVERY_PREFIX = "held-publication-requeue:";
+// Queue-owned admission prefixes that let a source-drift requeue keep the
+// request's verification. A caller's delivery id can never carry them.
+const REQUEST_CONTINUATION_DELIVERY_PREFIXES = [
+  DIRECT_LIFECYCLE_REQUEUE_DELIVERY_PREFIX,
+  HELD_PUBLICATION_REQUEUE_DELIVERY_PREFIX,
+];
 const EXACT_REVIEW_QUEUE_DELIVERY_TABLE = "exact_review_queue_deliveries";
 export const EXACT_REVIEW_AUTHENTICATED_BODY_FINGERPRINT_HEADER =
   "x-clawsweeper-exact-review-body-sha256";
@@ -879,7 +892,7 @@ const EXACT_REVIEW_ALARM_SAMPLE_WINDOW_MS = 60_000;
 const EXACT_REVIEW_ALARM_SAMPLE_THRESHOLD = 10;
 type AlarmWakeReason =
   | `batch_${"lease" | "departure"}`
-  | `${"queue" | "source_authority" | "command_intake" | "credential_circuit"}`;
+  | `${"queue" | "source_authority" | "command_intake" | "credential_circuit" | "payload_maintenance"}`;
 type AlarmScheduleDecision = readonly [AlarmWakeReason, number, number];
 // A watchdog may keep a synchronous Git operation alive, but it cannot turn a
 // hung runner into a permanent queue owner. The Git fence blocks any in-flight
@@ -1188,7 +1201,7 @@ export class ExactReviewQueue {
       const now = Date.now();
       const admitted = this.commandIntakeStore.admit(value, now);
       if (!admitted) return json({ error: "invalid_command_intake" }, 400);
-      if (admitted.accepted) await this.scheduleSourceAuthorityVerification(now, "command_intake");
+      if (admitted.accepted) await this.armAuxiliaryWake(now, "command_intake");
       return json(
         {
           ok: true,
@@ -1269,7 +1282,7 @@ export class ExactReviewQueue {
           return { deduped: false as const, reservation: created };
         });
         if (reserved.deduped) return json({ ok: true, deduped: true });
-        await this.scheduleSourceAuthorityVerification(reserved.reservation.nextAttemptAt);
+        await this.armAuxiliaryWake(reserved.reservation.nextAttemptAt);
         return json({ ok: true, branch_authority_pending: true }, 202);
       } catch {
         return json({ error: "branch_authority_unavailable" }, 409);
@@ -1353,7 +1366,7 @@ export class ExactReviewQueue {
           return { deduped: false as const, reservation: created };
         });
         if (reserved.deduped) return json({ ok: true, deduped: true });
-        await this.scheduleSourceAuthorityVerification(reserved.reservation.nextAttemptAt);
+        await this.armAuxiliaryWake(reserved.reservation.nextAttemptAt);
         return json({
           ok: true,
           source_authority_seq: reserved.reservation.sourceAuthoritySeq,
@@ -1434,7 +1447,7 @@ export class ExactReviewQueue {
       if (!updated) {
         return json({ error: "source_authority_review_acknowledgement_conflict" }, 409);
       }
-      await this.scheduleSourceAuthorityVerification(now);
+      await this.armAuxiliaryWake(now);
       return json({ ok: true, ...(commentId > 0 ? { comment_id: commentId } : {}) });
     }
     if (request.method === "POST" && url.pathname === "/state-writer/acquire") {
@@ -1500,7 +1513,12 @@ export class ExactReviewQueue {
       const decision = exactReviewDecisionFrom(body.decision);
       const ingress = body.ingress === undefined ? undefined : exactReviewIngressFrom(body.ingress);
       if (!deliveryId) return json({ error: "missing_delivery_id" }, 400);
-      if (deliveryId.startsWith(EXACT_REVIEW_QUEUE_LEGACY_GENERATION_PREFIX)) {
+      // The continuation prefixes are queue-owned provenance for continuing an
+      // explicit request; a caller's delivery id can never carry them.
+      if (
+        deliveryId.startsWith(EXACT_REVIEW_QUEUE_LEGACY_GENERATION_PREFIX) ||
+        REQUEST_CONTINUATION_DELIVERY_PREFIXES.some((prefix) => deliveryId.startsWith(prefix))
+      ) {
         return json({ error: "reserved_delivery_id" }, 400);
       }
       if (!decision) return json({ error: "invalid_exact_review_item" }, 400);
@@ -1549,9 +1567,13 @@ export class ExactReviewQueue {
       const now = Date.now();
       const semanticEdited = await exactReviewEditedSemanticInput(decision);
       const incomingPublicationRevision = exactReviewPublicationRevision(decision);
-      const activeBatchItemKeys = incomingPublicationRevision
-        ? new Set(this.batchStore.activeLeaseSnapshot(now).itemKeys)
-        : new Set<string>();
+      const verifiedSourceDriftRequeue =
+        decision.sourceAction === EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_SOURCE_ACTION &&
+        decision.sourceCommentVerified === true;
+      const activeBatchItemKeys =
+        incomingPublicationRevision || verifiedSourceDriftRequeue
+          ? new Set<string>(this.batchStore.activeLeaseSnapshot(now).itemKeys)
+          : new Set<string>();
       const accepted = this.storage.transactionSync(() => {
         this.pruneDeliveryReceiptsSync(now);
         this.pruneIngressReceiptsSync(now);
@@ -2142,7 +2164,13 @@ export class ExactReviewQueue {
             const followUpMergeBase =
               (queuesCommandFollowUp || pendingTerminalFinalizer || preservesActiveCommand) &&
               exactReviewQueueIsPublication(current)
-                ? (current.decision.publication?.producerDecision ?? current.decision)
+                ? pendingTerminalFinalizer
+                  ? // The finalized command ends with its retained driver. Only a
+                    // successor that brings its own command carries one forward.
+                    exactReviewDecisionWithoutCommand(
+                      current.decision.publication?.producerDecision ?? current.decision,
+                    )
+                  : (current.decision.publication?.producerDecision ?? current.decision)
                 : current.decision;
             // Revoke the active lease, but carry a still-current pull request command
             // onto its authoritative pull request successor just as pending coalescing does.
@@ -2235,6 +2263,19 @@ export class ExactReviewQueue {
             ingressAdmitted = true;
           }
         } else {
+          // A source-drift requeue that finds no queued item continues the
+          // request only for the deferred publisher that still holds the
+          // request's publication. The admitted item records that under a
+          // queue-owned delivery prefix, so the load-time rule keeps it.
+          const continuesHeldRequest =
+            verifiedSourceDriftRequeue &&
+            this.continuesHeldCommandPublicationSync(
+              state,
+              decision,
+              deliveryId,
+              activeBatchItemKeys,
+              now,
+            );
           const sourceDriftRequeueLimit = exactReviewSourceDriftRequeueLimit(this.env);
           const sourceDriftLoop =
             loopKey && sourceDriftRequeueLimit > 0 && exactReviewSourceDriftLoopCounted(decision)
@@ -2282,7 +2323,7 @@ export class ExactReviewQueue {
           }
           if (
             !decision.publication &&
-            (isLowPriorityExactReviewDecision(decision) || scheduledLane) &&
+            (isSheddableExactReviewRecovery(decision) || scheduledLane) &&
             exactReviewQueuePendingReviewCount(state) >= exactReviewPendingSoftLimit(this.env)
           ) {
             state.shedSinceReset = exactReviewShedSinceReset(state) + 1;
@@ -2340,7 +2381,9 @@ export class ExactReviewQueue {
           state.items[key] = {
             key,
             decision,
-            admissionDeliveryId: deliveryId,
+            admissionDeliveryId: continuesHeldRequest
+              ? `${HELD_PUBLICATION_REQUEUE_DELIVERY_PREFIX}${deliveryId}`
+              : deliveryId,
             ...(ingress ? { ingressFingerprint: ingress.fingerprint } : {}),
             ...(scheduledLane ? { reviewBudgetPrepaid: true as const } : {}),
             state: "pending",
@@ -2370,6 +2413,7 @@ export class ExactReviewQueue {
               ? { sourceAuthorityWatermark: exactReviewSourceAuthorityWatermark(decision)! }
               : {}),
           };
+          removeOrphanedRequestVerification(state.items[key]);
           this.recordLifecycleAdmission(state.items[key], decision, now);
           ingressAdmitted = true;
         }
@@ -3272,6 +3316,10 @@ export class ExactReviewQueue {
             lifecycleIdentity.revision,
           )
         : null;
+      const completionLifecycleTerminal =
+        "commandSuperseded" in completionResult && completionResult.commandSuperseded
+          ? "superseded"
+          : lifecycleTerminal;
       const terminalDisposition = exactReviewLifecycleCompletionDisposition({
         projection: projectionBeforeTerminalCommit,
         outcome,
@@ -3279,7 +3327,7 @@ export class ExactReviewQueue {
         requeued: lifecycleRequeued,
         parked: parkedForRetry,
         deadLetter: Boolean(completionResult.deadLetter),
-        lifecycleTerminal,
+        lifecycleTerminal: completionLifecycleTerminal,
       });
       const terminalFinalization =
         publicationCompletionOwnedByLease &&
@@ -3393,7 +3441,7 @@ export class ExactReviewQueue {
           requeued: lifecycleRequeued,
           parked: parkedForRetry,
           deadLetter: Boolean(completionResult.deadLetter),
-          lifecycleTerminal,
+          lifecycleTerminal: completionLifecycleTerminal,
           now,
         });
         if (publicationItem && publicationCompletion) {
@@ -4288,14 +4336,14 @@ export class ExactReviewQueue {
     }
 
     if (request.method === "POST" && url.pathname === "/github-read-model/ingest") {
+      let result;
       try {
-        return json(
-          this.githubWebhookReadModelStore.ingest(await request.json().catch(() => null)),
-          202,
-        );
+        result = this.githubWebhookReadModelStore.ingest(await request.json().catch(() => null));
       } catch {
         return json({ error: "invalid_github_webhook_read_model_delivery" }, 400);
       }
+      await this.schedulePayloadMaintenance();
+      return json(result, 202);
     }
 
     if (request.method === "POST" && url.pathname === "/github-read-model/lease-item") {
@@ -4359,14 +4407,14 @@ export class ExactReviewQueue {
     }
 
     if (request.method === "POST" && url.pathname === "/github-read-model/repair") {
+      let result;
       try {
-        return json(
-          this.githubWebhookReadModelStore.repair(await request.json().catch(() => null)),
-          202,
-        );
+        result = this.githubWebhookReadModelStore.repair(await request.json().catch(() => null));
       } catch {
         return json({ error: "invalid_github_webhook_read_model_repair" }, 400);
       }
+      await this.schedulePayloadMaintenance();
+      return json(result, 202);
     }
 
     if (request.method === "POST" && url.pathname === "/github-read-model/item") {
@@ -4955,6 +5003,7 @@ export class ExactReviewQueue {
       manual_publication: this.reviewAdmissionCapabilities().manual_publication,
       scheduled_feed: { ...stats.scheduled_feed, ...this.scheduledReviewFeedStatusSync(now) },
       reservation_claim_observability: reservationClaimObservability,
+      publication_handoff: reservationClaimObservability.summary,
       state_writer: { ...stateWriter, coordinator: stateWriterCoordinator },
       storage_schema_version: EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION,
       legacy_rollback_available:
@@ -5114,15 +5163,24 @@ export class ExactReviewQueue {
     await this.processSourceAuthorityReservations(startedAt, hostedTargetMetadataToken);
     await this.processCommandIntakes(startedAt, hostedTargetMetadataToken);
     const batchItemKeys = new Set<string>(this.batchStore.activeLeaseSnapshot(startedAt).itemKeys);
-    let snapshot = this.storage.transactionSync(() => {
+    const maintenance = this.storage.transactionSync(() => {
       this.pruneDeliveryReceiptsSync(startedAt);
       this.commandIntakeStore.pruneTerminalReceipts(startedAt);
       this.directPublicationStore.pruneTerminalSync(startedAt);
+      const payloads = this.githubWebhookReadModelStore.prunePayloadsSync(startedAt);
       const current = this.readStateSync();
       this.syncLegacyCompatibilitySync(current);
       this.pruneStalePublicationsSync(current, batchItemKeys, startedAt);
-      return current;
+      return { current, payloads };
     });
+    let snapshot = maintenance.current;
+    if (maintenance.payloads.scanned > 0) {
+      console.log("github_read_model_payload_maintenance", {
+        at: startedAt,
+        ...maintenance.payloads,
+        next_due_at: this.githubWebhookReadModelStore.nextPayloadMaintenanceAtSync(),
+      });
+    }
     let snapshotBatchOwnership = this.batchStore.activeLeaseSnapshot(startedAt);
     const reclaimedSnapshot = reclaimExpiredExactReviewLeases(
       snapshot,
@@ -8865,6 +8923,7 @@ export class ExactReviewQueue {
               requeued: result.requeued,
               parked: result.parked,
               deadLetter: Boolean(result.deadLetter),
+              ...(result.commandSuperseded ? { lifecycleTerminal: "superseded" as const } : {}),
             });
             const terminalFinalization =
               !result.requeued &&
@@ -8920,9 +8979,11 @@ export class ExactReviewQueue {
             }
             const lifecycleTerminal = result.deadLetter
               ? "dead_letter"
-              : result.requeued || result.parked || result.refreshed
-                ? "requeue"
-                : null;
+              : result.commandSuperseded
+                ? "superseded"
+                : result.requeued || result.parked || result.refreshed
+                  ? "requeue"
+                  : null;
             if (lifecycleTerminal) {
               lifecycleTerminals.push({
                 canonicalTargetKey: `${item.decision.targetRepo}#${item.decision.itemNumber}`,
@@ -9179,6 +9240,56 @@ export class ExactReviewQueue {
         ? { triggeredAt: sourceTriggeredAt }
         : {}),
       observedAt: now,
+    });
+  }
+
+  // The deferred publisher requeues its claimed producer decision while it
+  // still holds that publication. Its delivery id names the producer, so only
+  // that producer's own publication can continue the request, and only while
+  // it is the item's newest and no other command reached the item since. Match
+  // the producer metadata, not the queue key: same-lineage deduplication keeps
+  // a retained key while refreshing its producer.
+  private continuesHeldCommandPublicationSync(
+    state: ExactReviewQueueState,
+    decision: ExactReviewDecision,
+    deliveryId: string,
+    batchItemKeys: ReadonlySet<string>,
+    now: number,
+  ) {
+    const producer = /^publisher-source-drift:(\d+):([1-9]\d*)$/.exec(deliveryId);
+    if (!producer) return false;
+    const key = exactReviewItemKey(decision);
+    return Object.values(state.items).some((item) => {
+      const publication = item.decision.publication;
+      const revision = exactReviewPublicationRevision(item.decision);
+      if (
+        !exactReviewQueueIsPublication(item) ||
+        item.terminalFinalization ||
+        publication?.itemKey !== key ||
+        publication.producerRunId !== producer[1] ||
+        publication.producerRunAttempt !== Number(producer[2]) ||
+        revision === null
+      ) {
+        return false;
+      }
+      const held =
+        batchItemKeys.has(item.key) ||
+        (item.state === "leased" &&
+          isLiveExactReviewLease(
+            item,
+            now,
+            exactReviewPublicationDispatchLeaseMs(this.env),
+            exactReviewHeartbeatGraceMs(this.env),
+          ));
+      return (
+        held &&
+        exactReviewSameVerifiedCommand(publication.producerDecision, decision) &&
+        revision.sourceRevision >= this.publicationHeadRevisionSync(revision.targetKey) &&
+        !this.lifecycleProjectionStore.otherCommandAdmittedAfter(key, revision.sourceRevision, {
+          statusMarker: decision.commandStatusMarker ?? null,
+          statusCommentId: decision.statusCommentId ?? null,
+        })
+      );
     });
   }
 
@@ -10782,7 +10893,7 @@ export class ExactReviewQueue {
     // item receives fresh admission and claim facts when it is dispatched.
     clearExactReviewLease(item);
     item.decision = decision;
-    item.admissionDeliveryId = `direct-lifecycle-requeue:${item.key}:${completedRevision}`;
+    item.admissionDeliveryId = `${DIRECT_LIFECYCLE_REQUEUE_DELIVERY_PREFIX}${item.key}:${completedRevision}`;
     item.ingressFingerprint = undefined;
     item.state = "pending";
     item.revision = exactReviewDecisionHasCommandContext(decision)
@@ -11043,6 +11154,7 @@ export class ExactReviewQueue {
     this.storage.transactionSync(() => {
       this.backfillPublicationHeadsSync(this.readStateSync(), Date.now());
     });
+    await this.schedulePayloadMaintenance();
   }
 
   private ensureStorageSchemaSync() {
@@ -11953,7 +12065,7 @@ export class ExactReviewQueue {
 
   private takeScheduledReviewTokenSync(decision: ExactReviewDecision, now: number) {
     const lane = exactReviewScheduledLane(decision);
-    const lowPriority = isLowPriorityExactReviewDecision(decision);
+    const lowPriority = isSheddableExactReviewRecovery(decision);
     if (!lane && !lowPriority) return true;
     const global = this.scheduledReviewBucketSync("global", now);
     const bucket = lane ? this.scheduledReviewBucketSync(lane, now) : null;
@@ -14324,9 +14436,9 @@ export class ExactReviewQueue {
     );
   }
 
-  private async scheduleSourceAuthorityVerification(
+  private async armAuxiliaryWake(
     next: number,
-    reason: "source_authority" | "command_intake" = "source_authority",
+    reason: "source_authority" | "command_intake" | "payload_maintenance" = "source_authority",
   ) {
     const scheduled = await this.storage.getAlarm();
     const now = Date.now();
@@ -14339,6 +14451,13 @@ export class ExactReviewQueue {
       await this.storage.setAlarm(next);
       this.scheduledAlarmDecision = [reason, next, now];
     }
+  }
+
+  private async schedulePayloadMaintenance() {
+    // The indexed deadlines survive object restarts and keep an otherwise idle
+    // queue alive until every eligible payload has been classified.
+    const next = this.githubWebhookReadModelStore.nextPayloadMaintenanceAtSync();
+    if (next !== null) await this.armAuxiliaryWake(next, "payload_maintenance");
   }
 
   private scheduleNext(state: ExactReviewQueueState, now: number, forceScan = false) {
@@ -14437,6 +14556,7 @@ export class ExactReviewQueue {
       ["source_authority", sourceAuthorityNext],
       ["command_intake", commandIntakeNext],
       ["credential_circuit", credentialCircuitNext],
+      ["payload_maintenance", this.githubWebhookReadModelStore.nextPayloadMaintenanceAtSync()],
     ];
     const selected = candidates.reduce(
       (a, b) => (b[1] !== null && b[1] < (a?.[1] ?? Infinity) ? b : a),
@@ -15275,6 +15395,8 @@ function finishExactReviewPublicationQueueItem({
   refreshed: boolean;
   parked: boolean;
   deadLetter?: ExactReviewDeadLetterInsert;
+  /** A refreshed producer's command that a newer queued command replaced. */
+  commandSuperseded?: true;
 } {
   const completionRevision = ownedRevision ?? Number(item.leaseRevision || 0);
   const hasNewerRevision = item.revision > completionRevision;
@@ -15354,8 +15476,20 @@ function finishExactReviewPublicationQueueItem({
     (completion.reasonCode === "artifact_unavailable" &&
       attempt >= EXACT_REVIEW_PUBLICATION_ARTIFACT_RETRY_LIMIT);
   if (artifactRefresh && !decisionPublicationPolicy(item.decision)) {
-    refreshExactReviewPublicationItem(state, item, now, env, allocateRevision);
-    return { requeued: false, retried: false, refreshed: true, parked: false };
+    const { commandSuperseded } = refreshExactReviewPublicationItem(
+      state,
+      item,
+      now,
+      env,
+      allocateRevision,
+    );
+    return {
+      requeued: false,
+      retried: false,
+      refreshed: true,
+      parked: false,
+      ...(commandSuperseded ? { commandSuperseded: true as const } : {}),
+    };
   }
 
   const retryExhausted =
@@ -15930,7 +16064,26 @@ function normalizeExactReviewQueueItem(item: ExactReviewQueueItem): ExactReviewQ
   Reflect.deleteProperty(item, "reviewProofRequests");
   removeRetiredDecisionFields(item.decision);
   removeRetiredDecisionFields(item.leaseDecision);
+  removeOrphanedRequestVerification(item);
   return item;
+}
+
+/**
+ * Only the in-place lifecycle requeue and a held deferred publication's requeue
+ * continue an explicit request. Any other source-drift requeue, including a row
+ * persisted before this rule, may copy a finished or replaced request, so it
+ * keeps the command status but not the request's verification.
+ */
+function removeOrphanedRequestVerification(item: ExactReviewQueueItem): void {
+  const deliveryId = item.admissionDeliveryId ?? "";
+  if (REQUEST_CONTINUATION_DELIVERY_PREFIXES.some((prefix) => deliveryId.startsWith(prefix))) {
+    return;
+  }
+  for (const decision of [item.decision, item.leaseDecision]) {
+    if (decision?.sourceAction === EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_SOURCE_ACTION) {
+      Reflect.deleteProperty(decision, "sourceCommentVerified");
+    }
+  }
 }
 
 function removeRetiredDecisionFields(decision: ExactReviewDecision | undefined): void {
@@ -16163,7 +16316,7 @@ function refreshExactReviewPublicationItem(
   now: number,
   env,
   allocateRevision: ExactReviewRevisionAllocator,
-) {
+): { commandSuperseded: boolean } {
   if (decisionPublicationPolicy(item.decision))
     throw new Error("manual publication cannot request model recovery");
   const publication = item.decision.publication;
@@ -16181,14 +16334,26 @@ function refreshExactReviewPublicationItem(
   const recoveryKey = exactReviewItemKey(decision);
   const current = state.items[recoveryKey];
   if (current) {
-    if (current.state === "pending" || current.state === "parked") {
-      current.decision = mergePendingExactReviewDecision(current.decision, decision);
-      current.state = "pending";
-      current.parkedReason = undefined;
-      current.parkedRecoveryAttempts = 0;
-    } else {
-      return;
+    if (current.state !== "pending" && current.state !== "parked") {
+      return { commandSuperseded: false };
     }
+    if (exactReviewDecisionHasCommandContext(current.decision)) {
+      // As at /enqueue, a recovery never replaces a queued command. That command
+      // arrived after this producer's review, so a different producer command
+      // ends here as superseded instead of overwriting the newer one.
+      return {
+        commandSuperseded:
+          exactReviewDecisionHasCommandContext(decision) &&
+          !sameCommandStatusAddress(
+            exactReviewQueueCommandStatusAddress(decision),
+            exactReviewQueueCommandStatusAddress(current.decision),
+          ),
+      };
+    }
+    current.decision = mergePendingExactReviewDecision(current.decision, decision);
+    current.state = "pending";
+    current.parkedReason = undefined;
+    current.parkedRecoveryAttempts = 0;
     current.revision = allocateRevision(recoveryKey, current.revision + 1);
     current.updatedAt = now;
     Object.assign(
@@ -16202,7 +16367,7 @@ function refreshExactReviewPublicationItem(
     current.firstFailureAt = undefined;
     current.lastFailureReason = undefined;
     clearExactReviewReviewRecovery(current);
-    return;
+    return { commandSuperseded: false };
   }
   // Refresh is the terminal recovery for an unusable artifact. It must not be
   // shed after deleting the only durable publication reference. Its producer
@@ -16218,6 +16383,7 @@ function refreshExactReviewPublicationItem(
     attempts: 0,
     reviewRetryPolicyEpoch: exactReviewRetryPolicyEpoch(env),
   };
+  return { commandSuperseded: false };
 }
 
 function exactReviewQueueEnqueueAttempt(state: ExactReviewQueueState, now: number) {
@@ -18721,8 +18887,11 @@ function exactReviewReservationClaimObservability({
   legacyStateRepoBatchEnabled,
   maxConcurrentBatches,
 }) {
-  const reservationToClaimDelays = batches.flatMap((batch) =>
-    batch.dispatchedAt === null ? [] : [Math.max(0, batch.createdAt - batch.dispatchedAt)],
+  const timedBatches = batches.filter(
+    (batch) => batch.dispatchedAt !== null && batch.dispatchedAt <= batch.createdAt,
+  );
+  const reservationToClaimDelays = timedBatches.map(
+    (batch) => batch.createdAt - batch.dispatchedAt,
   );
   const alerts = [];
   const activeBatches = batches.filter((batch) => batch.state === "leased");
@@ -18752,6 +18921,23 @@ function exactReviewReservationClaimObservability({
   const dispatchedBatch = dispatchId
     ? batches.find((batch) => batch.dispatchId === dispatchId)
     : undefined;
+  // Failed dispatches release the reservation. Keep their recorded failure
+  // visible even after the pending deadline has been cleared.
+  const dispatchState = dispatchedBatch
+    ? "claimed"
+    : !dispatchAt
+      ? "idle"
+      : dispatcher?.publicationBatchDispatchSucceeded === false
+        ? "dispatch_failed"
+        : !dispatchPendingUntil
+          ? "idle"
+          : dispatchPendingUntil <= now
+            ? "reservation_expired"
+            : dispatcher?.publicationBatchDispatchSucceeded === true
+              ? "awaiting_claim"
+              : "dispatching";
+  const claimTimes = timedBatches.map((batch) => batch.createdAt);
+  const delayBuckets = exactReviewReservationClaimDelayBuckets(reservationToClaimDelays);
   if (
     dispatchAt &&
     dispatchPendingUntil > now &&
@@ -18817,6 +19003,22 @@ function exactReviewReservationClaimObservability({
   return {
     schema_version: 1,
     generated_at: new Date(now).toISOString(),
+    // Only observed dispatch→claim spans belong in the aggregate. A missing
+    // dispatch timestamp is not zero delay, and this bounded sample is not a
+    // time-window percentile or eligibility-to-claim measurement.
+    summary: {
+      observed_at: new Date(now).toISOString(),
+      sample_count: reservationToClaimDelays.length,
+      retained_batches: batches.length,
+      first_claim_at: claimTimes.length ? new Date(Math.min(...claimTimes)).toISOString() : null,
+      last_claim_at: claimTimes.length ? new Date(Math.max(...claimTimes)).toISOString() : null,
+      dispatch_state: dispatchState,
+      dispatch_wait_seconds:
+        dispatchState === "awaiting_claim"
+          ? Math.max(0, Math.floor((now - dispatchAt) / 1000))
+          : null,
+      delay_buckets: delayBuckets.buckets,
+    },
     // Direct publication never enters a publication batch unless it falls back.
     // Keep its canonical Durable Object path distinct from the batch-only
     // timestamps below so dashboards do not infer state-writer latency for a
@@ -18841,7 +19043,7 @@ function exactReviewReservationClaimObservability({
       max_concurrent_batches: maxConcurrentBatches,
       available_batches: Math.max(0, maxConcurrentBatches - activeBatches.length),
     },
-    delay_buckets: exactReviewReservationClaimDelayBuckets(reservationToClaimDelays),
+    delay_buckets: delayBuckets,
     alerts,
     batches: batches.map((batch) => ({
       batch_id: batch.batchId,
