@@ -40,14 +40,19 @@ const buildLocalRangeReviewForTest = createLocalRangeReviewer({
 });
 
 // Run the same native parity cases against either entrypoint.
-const CLI = fileURLToPath(
-  new URL(
-    process.env.CLAWSWEEPER_TEST_LOCAL_ENTRY === "1"
-      ? "../dist/clawsweeper-local.js"
-      : "../dist/clawsweeper.js",
-    import.meta.url,
-  ),
-);
+const LOCAL_CLI =
+  process.env.CLAWSWEEPER_TEST_LOCAL_ENTRY_PATH ??
+  fileURLToPath(new URL("../dist/clawsweeper-local.js", import.meta.url));
+const CLI =
+  process.env.CLAWSWEEPER_TEST_LOCAL_ENTRY_PATH ??
+  fileURLToPath(
+    new URL(
+      process.env.CLAWSWEEPER_TEST_LOCAL_ENTRY === "1"
+        ? "../dist/clawsweeper-local.js"
+        : "../dist/clawsweeper.js",
+      import.meta.url,
+    ),
+  );
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -912,11 +917,10 @@ console.log(process.argv.includes("rate_limit") ? '{"resources":{"core":{"remain
         : `#!/bin/sh\nexec "${process.execPath}" "${ghScript}" "$@"\n`,
       { mode: 0o755 },
     );
-    const localCLI = fileURLToPath(new URL("../dist/clawsweeper-local.js", import.meta.url));
     const result = spawnSync(
       process.execPath,
       [
-        localCLI,
+        LOCAL_CLI,
         "review",
         "--local-range",
         "--base",

@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+#!/usr/bin/env node
+import { readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, boolArg } from "./clawsweeper-args.js";
@@ -29,7 +30,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   localReviewCommand({ ...args, local_range: true });
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// npm's POSIX bin is a symlink; Node resolves the module but leaves argv[1]
+// lexical. Compare real paths so the installed command actually runs.
+if (process.argv[1] && realpathSync(resolve(process.argv[1])) === fileURLToPath(import.meta.url)) {
   main().catch(async (error) => {
     const [
       { agentInputScanFailureExitCode },

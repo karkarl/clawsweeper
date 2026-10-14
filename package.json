@@ -10,6 +10,7 @@
     "build:dashboard": "tsc -p tsconfig.dashboard.json",
     "build:node": "pnpm run build && pnpm run build:repair",
     "build:all": "pnpm run build && pnpm run build:repair && pnpm run build:dashboard",
+    "package:local": "pnpm run build:node && node scripts/stage-local-package.mjs",
     "plan": "node dist/clawsweeper.js plan",
     "reserve-review-lease": "node dist/clawsweeper.js reserve-review-lease",
     "review": "node dist/clawsweeper.js review",
@@ -89,6 +90,7 @@
   "devDependencies": {
     "@types/node": "^24.13.4",
     "@types/yauzl": "3.4.0",
+    "es-module-lexer": "3.0.3",
     "markdown-it": "^15.0.2",
     "oxfmt": "^0.67.0",
     "oxlint": "^1.82.0",
