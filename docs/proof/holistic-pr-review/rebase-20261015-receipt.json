@@ -1,0 +1,840 @@
+{
+  "date": "2026-10-15",
+  "selectedBase": "291ab8a0090a8f76c08e4d0e39ea4cf1fdcbe0c0",
+  "originalHead": "5bfeca75a1f932ff3eb648199716e8095804271c",
+  "rebasedSourceHead": "8c9767fe4df5dc59b5a0233ebe7ca17141f93638",
+  "proofBinding": "Executed during the third rebase pick with its staged diff; recorded source and prompt hashes are verified against the complete rebased source. Later evidence-only edits do not relabel the execution head.",
+  "environment": {
+    "provider": "native Linux x64 task host",
+    "image": null,
+    "lease": null,
+    "node": "v26.8.2",
+    "pnpm": "12.4.1",
+    "codex": "0.147.0",
+    "dependencyAdmission": "pnpm install --frozen-lockfile; existing lockfile policies, no exception"
+  },
+  "resolver": {
+    "mechanism": "Two dedicated native Codex exec conflict-resolution passes; gpt-6-astra/high/workspace-write. Owner performed all git mutations.",
+    "passes": [
+      {
+        "log": "resolver-1.log",
+        "exitCode": 0
+      },
+      {
+        "log": "resolver-2.log",
+        "exitCode": 0
+      }
+    ],
+    "precommitReviews": [
+      {
+        "log": "precommit-1.log",
+        "result": "P2 stale proof baseline accepted and repaired before first replay commit"
+      },
+      {
+        "log": "precommit-1b.log",
+        "result": "No actionable findings"
+      },
+      {
+        "log": "precommit-2.log",
+        "result": "No supported actionable defects"
+      }
+    ]
+  },
+  "validation": {
+    "focused": {
+      "tests": 399,
+      "pass": 399,
+      "fail": 0,
+      "skip": 0
+    },
+    "candidateCheck": {
+      "command": "pnpm run check",
+      "exitCode": 1,
+      "tests": 5835,
+      "pass": 5807,
+      "fail": 6,
+      "skip": 22,
+      "log": "check-clean.log"
+    },
+    "selectedBaseCheck": {
+      "command": "pnpm run check",
+      "exitCode": 1,
+      "tests": 5811,
+      "pass": 5783,
+      "fail": 6,
+      "skip": 22,
+      "log": "base-check-owned.log"
+    },
+    "failures": [
+      "apply drift refresh shell fixture",
+      "closed publication retirement shell fixture",
+      "focused state hydration shell fixture",
+      "corrupt scanner download fixture",
+      "target dispatcher acknowledgement shell/credential fixture",
+      "target dispatcher OIDC/fallback shell fixture"
+    ],
+    "initialAttempt": "Initial check.log additionally discovered three obsolete generated dist test failures. Preserved the old build, rebuilt clean, and reran the complete gate. An archive-only baseline lacked its own Git index for documentation discovery; the independent selected-base repository rerun is base-check-owned.log. No source or host fixture workaround was applied."
+  },
+  "artifactRoot": ".artifacts/rebase-20261015/",
+  "nativeModelProof": {
+    "baseRevision": "291ab8a0090a8f76c08e4d0e39ea4cf1fdcbe0c0",
+    "candidateHead": "b8d4ff27b07fc9b501fdb078be236646ee56d42c",
+    "candidateDiffSha256": "fc077014972f785902ff192a1f83952e076e97f7454bde318bcf598329bbf5b9",
+    "productionSourceSha256": {
+      "src/clawsweeper-review-runtime.ts": "946404ac4fa36e2f2b5b9abf581f0c220d9304ea6d7a03795074832679b1fb1b",
+      "src/clawsweeper-review-core.ts": "1f8855c9ae28351972ecf4319dd85ff46d15fc1355c890a7172481b10b332c2f",
+      "src/clawsweeper-review-policy-hash.ts": "5dfc5885e3a8a76012c018b401bb6200ec31f5e1c20c0e968dfdd4df07cfa1ae",
+      "src/review-prompt-sections.ts": "b20e41a82e72aa4f9eda57c2d77c941335a87394e3a0547d340876b472ec6a20",
+      "src/repository-profiles.ts": "a1b2de3d53999bed408c91e9bb7abaa51f88f87e68081c372c4910a4b8be348b",
+      "src/clawsweeper-runtime.ts": "239b2acb96fdcff479fa7ed71694e93598d47ff2d16e8331ee9d6d0df59dcd36",
+      "src/agent-runner.ts": "d1a196712a7677720776672f63c6d9511d3af4ba82823d89a333c2bb01264c35",
+      "src/agent-input-scan.ts": "9d4d71793cf2c182e84380ca9787cd3957008220475dc9fabb8701a66df139bb",
+      "src/openclaw-process.ts": "d1f5cf30e28215c904cb05e1d9fcb882c1e952bd1f5680dfa98fdad4d332503c"
+    },
+    "model": "gpt-6-astra",
+    "modelSelection": "Explicit native Astra; private environment override removed only for these child processes, no persisted configuration change.",
+    "node": "v26.8.2",
+    "platform": "linux",
+    "codex": "codex-cli 0.147.0",
+    "environment": {
+      "architecture": "x64",
+      "execution": "Native local-range processes; no GitHub publication",
+      "outerValidationEnvironment": "Provider, image, and lease must be recorded by the owner"
+    },
+    "promptAssets": {
+      "review-item.md": "f7ce998d3b18c3a9eeeda25391542e35769190136f72d38c66c4fa39ee2292bc",
+      "review-item-issue.md": "ace91622ca76092112701058c43d78ac88cc70c978bc7786d79bea1247e32c7a",
+      "review-item-pr.md": "03ee4095ed28f2e5231cf1f124b959c79565900eae86af81d7ea752d029b232a",
+      "review-close-reasons.md": "025b523ad0d335f31963186759a283493c1936f3f9fd7d73076260985d4d08b1",
+      "review-pr.md": "9ddacdc1b3e8055b127a98a93e6446f0a63821f7b9c36b911119b66f70d27773",
+      "review-issue.md": "4e57a1e30805139cc3c283e5c3390ceff5c6d3adc0ddfe5bd997993cab3863d7"
+    },
+    "baselinePromptAssets": {
+      "review-item.md": "56a60eedc81ff793fccd21b5afe91cf24d566eb66d4ee54033d8cf1b3268773f",
+      "review-item-issue.md": "ace91622ca76092112701058c43d78ac88cc70c978bc7786d79bea1247e32c7a",
+      "review-item-pr.md": "03ee4095ed28f2e5231cf1f124b959c79565900eae86af81d7ea752d029b232a",
+      "review-close-reasons.md": "025b523ad0d335f31963186759a283493c1936f3f9fd7d73076260985d4d08b1"
+    },
+    "baselinePromptSha256": "56a60eedc81ff793fccd21b5afe91cf24d566eb66d4ee54033d8cf1b3268773f",
+    "issuePromptByteIdentical": false,
+    "issueGuidanceUnchanged": true,
+    "issuePromptHashes": {
+      "openclaw/openclaw": {
+        "candidate": "6a51dda5ac4a63e89b2079268a5069cd8ad6b461c71254a8bd90b4d2a91c92ce",
+        "baseline": "9eedb08363707ab11a0c78000c66889c5577bd7f5cb3a5511e210d77f08eeac1",
+        "byteIdentical": false,
+        "guidanceUnchanged": true
+      },
+      "openclaw/clawsweeper": {
+        "candidate": "2a878ad5208e0129e9b516aa4211138b8321e6b2467510a578a5f6c9fdbdfa13",
+        "baseline": "7c11725f90f3c1af0801df4ec4e5819361a7fa45d7e3964a33c972e78efdb3e8",
+        "byteIdentical": false,
+        "guidanceUnchanged": true
+      },
+      "openclaw/clawhub": {
+        "candidate": "1d4dac6da9222e679f66718cf7f62a8a910d637bccad50b85ebd18d207c8c4cf",
+        "baseline": "264fc02876bbfb20ab7523a1c0edb6efe6440deaea9fc6f39e08587efcfdae2c",
+        "byteIdentical": false,
+        "guidanceUnchanged": true
+      }
+    },
+    "cases": [
+      {
+        "dir": "$OUTPUT/case-a",
+        "base": "d024763f8a0f8db37666631f1c467210006b90cb",
+        "head": "aa3c4f6c974ad37c09ab559312037b4f78622b2f",
+        "diffSha256": "42b297e13bc877b1e7bda54bf719bed72194d05d1f5e2b31c5898d9e95715768"
+      },
+      {
+        "dir": "$OUTPUT/case-b",
+        "base": "d024763f8a0f8db37666631f1c467210006b90cb",
+        "head": "5cdfd7e76f27fcd77787fd3e108a07798dde1709",
+        "diffSha256": "57dfcf256c94fdb08fd08799e132274339802fdfb306c03722e078bf1b457937"
+      },
+      {
+        "dir": "$OUTPUT/case-c",
+        "base": "7568b7867a9ab132467430b2a11cdfdb11194bd0",
+        "head": "6383be8a0aee8e0dda436e883960d446864ab502",
+        "diffSha256": "c1a24ceecd2b56bbe08204ac8943269e907b086f6101b723ba09bc84afc11e6f"
+      }
+    ],
+    "runs": [
+      {
+        "variant": "candidate",
+        "case": 1,
+        "startedAt": "2026-10-15T21:27:27.072Z",
+        "finishedAt": "2026-10-15T21:28:41.647Z",
+        "command": [
+          "/usr/bin/node",
+          "$WORKTREE/dist/clawsweeper.js",
+          "review",
+          "--local-range",
+          "--target-repo",
+          "openclaw/review-fixture",
+          "--target-dir",
+          "$OUTPUT/candidate-target-1",
+          "--base",
+          "d024763f8a0f8db37666631f1c467210006b90cb",
+          "--codex-model",
+          "gpt-6-astra",
+          "--codex-timeout-ms",
+          "180000",
+          "--output-retention",
+          "debug",
+          "--artifact-dir",
+          "$OUTPUT/candidate-1"
+        ],
+        "exitCode": 0,
+        "signal": null,
+        "effectiveModel": "gpt-6-astra",
+        "reasoningEffort": "medium",
+        "sandbox": "read-only",
+        "artifactDir": "$OUTPUT/candidate-1",
+        "targetDir": "$OUTPUT/candidate-target-1",
+        "targetClean": true,
+        "load": {
+          "staticPromptBytes": 39346,
+          "schemaBytes": 36711,
+          "runtimeEnvelopeAndContextBytes": 6341,
+          "gitHubContextSectionBytes": 2881,
+          "requiredSchemaFields": 61
+        },
+        "promptSha256": "9d549c1e7a1d050bdaa8307927f6e76494a4388221c3c04fe72fa0f9bd55319d",
+        "resultSha256": "4691b5ea3cdcabb0304cab9f35b7fb6e73a75b24ecfb1f07e393501a8ce4508b",
+        "result": {
+          "summary": "This PR implements cancellation for immediate calls but loses the signal on the default queued path, so it does not yet deliver its documented behavior.",
+          "systemContext": "createService accepts inputs and a caller-supplied transport; submissions either execute immediately or enter an explicitly drained FIFO queue, and each submission returns its own result promise.",
+          "reviewFindings": [
+            {
+              "title": "Preserve the cancellation signal when draining queued requests",
+              "body": "The new signal is stored on the task, but service.drain still calls execute({ input: task.input }, transport), discarding it. With the default queued: true, submitting a request, aborting its signal, and then draining invokes transport instead of rejecting without execution. Aborting after execution starts also cannot reach the transport because it receives signal: undefined. Pass the complete task through the drain adapter so both paths use the worker's cancellation handling.",
+              "priority": 2,
+              "confidenceScore": 1,
+              "file": "service.mjs",
+              "lineStart": 7,
+              "lineEnd": 8,
+              "lateFinding": false
+            }
+          ],
+          "overallCorrectness": "patch is incorrect",
+          "solutionAssessment": "The worker is an appropriate shared owner for the abort check, and the queue already isolates rejected jobs, but the service adapter must preserve the signal for the change to work across both entrypoints.",
+          "evidence": [
+            {
+              "repo": "openclaw/review-fixture",
+              "label": "Pinned change",
+              "detail": "The introduced range adds signal capture, a pre-execution abort check, transport forwarding, and documentation promising cancellation for both submission modes.",
+              "file": "worker.mjs",
+              "line": 2,
+              "command": "git diff --no-ext-diff --no-textconv --no-renames d024763f8a0f8db37666631f1c467210006b90cb aa3c4f6c974ad37c09ab559312037b4f78622b2f --",
+              "sha": "aa3c4f6c974ad37c09ab559312037b4f78622b2f"
+            },
+            {
+              "repo": "openclaw/review-fixture",
+              "label": "Queued execution drops cancellation",
+              "detail": "submit stores the signal, and Queue preserves the task, but service.drain reconstructs it using only input before calling execute.",
+              "file": "service.mjs",
+              "line": 10,
+              "command": "nl -ba service.mjs; nl -ba queue.mjs; nl -ba worker.mjs",
+              "sha": "aa3c4f6c974ad37c09ab559312037b4f78622b2f"
+            },
+            {
+              "repo": "openclaw/review-fixture",
+              "label": "Existing failure isolation",
+              "detail": "Queue.drain catches each execution failure and rejects that job before continuing, so preserving the signal can use the existing rejection path without adding a second cancellation owner.",
+              "file": "queue.mjs",
+              "line": 9,
+              "command": "nl -ba queue.mjs",
+              "sha": "aa3c4f6c974ad37c09ab559312037b4f78622b2f"
+            },
+            {
+              "repo": "openclaw/review-fixture",
+              "label": "Default branch and feature history",
+              "detail": "The supplied default-branch revision has no signal handling. Available history contains the initial service snapshot and this PR; the root boundary does not establish any earlier implementation rationale or ownership.",
+              "file": "service.mjs",
+              "line": 6,
+              "command": "git log --all --format='%H %s' -G 'submit|execute|signal|abort|drain' -- README.md service.mjs worker.mjs",
+              "sha": "d024763f8a0f8db37666631f1c467210006b90cb"
+            },
+            {
+              "repo": "openclaw/review-fixture",
+              "label": "Repository policy applied",
+              "detail": "The complete root policy requires read-only inspection of this self-contained service and forbids other reviewers; no nested policies or maintainer notes are present.",
+              "file": "AGENTS.md",
+              "line": 1,
+              "command": "cat AGENTS.md; git ls-tree -r --name-only HEAD",
+              "sha": "aa3c4f6c974ad37c09ab559312037b4f78622b2f"
+            }
+          ],
+          "realBehaviorProof": {
+            "status": "missing",
+            "summary": "No supplied artifact exercises the changed service-to-worker-to-transport path; provide redacted terminal output or logs showing cancellation before execution and during transport for immediate and queued calls, with later queued work completing.",
+            "evidenceKind": "none",
+            "needsContributorAction": true,
+            "dataModelCompatibility": "not_applicable"
+          }
+        }
+      },
+      {
+        "variant": "candidate",
+        "case": 2,
+        "startedAt": "2026-10-15T21:28:41.661Z",
+        "finishedAt": "2026-10-15T21:29:55.883Z",
+        "command": [
+          "/usr/bin/node",
+          "$WORKTREE/dist/clawsweeper.js",
+          "review",
+          "--local-range",
+          "--target-repo",
+          "openclaw/review-fixture",
+          "--target-dir",
+          "$OUTPUT/candidate-target-2",
+          "--base",
+          "d024763f8a0f8db37666631f1c467210006b90cb",
+          "--codex-model",
+          "gpt-6-astra",
+          "--codex-timeout-ms",
+          "180000",
+          "--output-retention",
+          "debug",
+          "--artifact-dir",
+          "$OUTPUT/candidate-2"
+        ],
+        "exitCode": 0,
+        "signal": null,
+        "effectiveModel": "gpt-6-astra",
+        "reasoningEffort": "medium",
+        "sandbox": "read-only",
+        "artifactDir": "$OUTPUT/candidate-2",
+        "targetDir": "$OUTPUT/candidate-target-2",
+        "targetClean": true,
+        "load": {
+          "staticPromptBytes": 39346,
+          "schemaBytes": 36711,
+          "runtimeEnvelopeAndContextBytes": 6459,
+          "gitHubContextSectionBytes": 2881,
+          "requiredSchemaFields": 61
+        },
+        "promptSha256": "63041ca438c50e8922bcaa42cde8b7f94e4c2fc597d979edf1376ce13e280a6d",
+        "resultSha256": "c574700544280d98622e7d0a25a1b61e6de0fd90fc5b093181b77d86466c6f1c",
+        "result": {
+          "summary": "This PR coherently carries cancellation through both execution paths, and source inspection found no introduced correctness or security defect. Queued cancellation is checked when the job executes; in-flight cancellation remains the supplied transport’s responsibility.",
+          "systemContext": "createService accepts request inputs and a caller-supplied transport; requests either enter the explicitly drained FIFO queue or execute immediately through the shared worker, returning transport results or rejection reasons.",
+          "reviewFindings": [],
+          "overallCorrectness": "patch is correct",
+          "solutionAssessment": "The change uses the existing shared execution owner rather than adding competing cancellation machinery, preserves per-job failure isolation, and correctly forwards the signal for transport-owned in-flight handling.",
+          "evidence": [
+            {
+              "repo": "openclaw/review-fixture",
+              "label": "Both entrypoints preserve the signal",
+              "detail": "submit stores input and signal together, and drain now passes that same task to execute rather than reconstructing an input-only task.",
+              "file": "service.mjs",
+              "line": 6,
+              "command": "git diff --no-ext-diff --no-textconv --no-renames d024763f8a0f8db37666631f1c467210006b90cb 5cdfd7e76f27fcd77787fd3e108a07798dde1709 --",
+              "sha": "5cdfd7e76f27fcd77787fd3e108a07798dde1709"
+            },
+            {
+              "repo": "openclaw/review-fixture",
+              "label": "Shared execution boundary",
+              "detail": "The worker rejects already-aborted requests before transport invocation and otherwise forwards the original signal in transport options.",
+              "file": "worker.mjs",
+              "line": 2,
+              "command": "nl -ba worker.mjs",
+              "sha": "5cdfd7e76f27fcd77787fd3e108a07798dde1709"
+            },
+            {
+              "repo": "openclaw/review-fixture",
+              "label": "Failure isolation remains intact",
+              "detail": "Each queued execution is awaited inside its own try/catch, so cancellation rejection settles that job without terminating the drain loop.",
+              "file": "queue.mjs",
+              "line": 9,
+              "command": "nl -ba queue.mjs",
+              "sha": "5cdfd7e76f27fcd77787fd3e108a07798dde1709"
+            },
+            {
+              "repo": "openclaw/review-fixture",
+              "label": "Explicit cancellation ownership",
+              "detail": "The documentation assigns in-flight abort handling to transport and retains explicit FIFO draining; it does not promise immediate removal or settlement of a cancelled waiting job.",
+              "file": "README.md",
+              "line": 5,
+              "command": "nl -ba README.md",
+              "sha": "5cdfd7e76f27fcd77787fd3e108a07798dde1709"
+            },
+            {
+              "repo": "openclaw/review-fixture",
+              "label": "Default-branch behavior and history",
+              "detail": "The pinned default branch has no signal handling: its worker calls transport with input only. Local history contains the initial snapshot and this change; boundary blame does not establish an earlier introduction rationale.",
+              "file": "worker.mjs",
+              "line": 2,
+              "command": "git show --no-ext-diff --no-textconv d024763f8a0f8db37666631f1c467210006b90cb:worker.mjs",
+              "sha": "d024763f8a0f8db37666631f1c467210006b90cb"
+            }
+          ],
+          "realBehaviorProof": {
+            "status": "missing",
+            "summary": "The supplied context contains no runtime evidence for the changed service and worker; provide redacted terminal output or logs showing queued and immediate pre-aborted requests skip transport, an active transport receives and handles abort, and a later queued request completes.",
+            "evidenceKind": "none",
+            "needsContributorAction": true,
+            "dataModelCompatibility": "sufficient"
+          }
+        }
+      },
+      {
+        "variant": "candidate",
+        "case": 3,
+        "startedAt": "2026-10-15T21:29:55.900Z",
+        "finishedAt": "2026-10-15T21:31:12.722Z",
+        "command": [
+          "/usr/bin/node",
+          "$WORKTREE/dist/clawsweeper.js",
+          "review",
+          "--local-range",
+          "--target-repo",
+          "openclaw/review-fixture",
+          "--target-dir",
+          "$OUTPUT/candidate-target-3",
+          "--base",
+          "7568b7867a9ab132467430b2a11cdfdb11194bd0",
+          "--codex-model",
+          "gpt-6-astra",
+          "--codex-timeout-ms",
+          "180000",
+          "--output-retention",
+          "debug",
+          "--artifact-dir",
+          "$OUTPUT/candidate-3"
+        ],
+        "exitCode": 0,
+        "signal": null,
+        "effectiveModel": "gpt-6-astra",
+        "reasoningEffort": "medium",
+        "sandbox": "read-only",
+        "artifactDir": "$OUTPUT/candidate-3",
+        "targetDir": "$OUTPUT/candidate-target-3",
+        "targetClean": true,
+        "load": {
+          "staticPromptBytes": 39346,
+          "schemaBytes": 36711,
+          "runtimeEnvelopeAndContextBytes": 6341,
+          "gitHubContextSectionBytes": 2881,
+          "requiredSchemaFields": 61
+        },
+        "promptSha256": "20b09286f5a9f223562f95d2da8289343eeb0caa07542575ff78e28b2b2f217a",
+        "resultSha256": "3513e7b36577de5a4c93e05164ef211532355f0c5ce59245647b9dd66ceb8218",
+        "result": {
+          "summary": "The committed change coherently implements cancellation for immediate and queued requests, with no supported correctness or security findings. The queued execution closure preserves the signal; the unchanged drain fallback that discards it is not reached by requests submitted through this service.",
+          "systemContext": "createService accepts a caller-supplied transport and exposes submit and drain; submissions either execute immediately or enter an in-memory queue, and execute returns the transport result or a pre-execution cancellation rejection.",
+          "reviewFindings": [],
+          "overallCorrectness": "patch is correct",
+          "solutionAssessment": "The implementation uses the queue's existing run callback rather than adding a competing scheduler, preserves per-job failure isolation, and delegates in-flight abort semantics to the transport as documented; concurrent drain behavior and synchronous immediate transport errors are unchanged.",
+          "evidence": [
+            {
+              "repo": "openclaw/review-fixture",
+              "label": "Pinned introduced change",
+              "detail": "The introduced diff adds signal capture, a queued execution closure, the worker cancellation check, and documentation; it contains no unrelated changes.",
+              "file": "service.mjs",
+              "line": 6,
+              "command": "git diff --no-ext-diff --no-textconv --no-renames 7568b7867a9ab132467430b2a11cdfdb11194bd0 6383be8a0aee8e0dda436e883960d446864ab502 --",
+              "sha": "6383be8a0aee8e0dda436e883960d446864ab502"
+            },
+            {
+              "repo": "openclaw/review-fixture",
+              "label": "Queued execution preserves cancellation",
+              "detail": "Queue.drain prefers the stored run closure over its fallback executor, so service submissions retain their original signal. The per-job catch rejects canceled or failed jobs without stopping subsequent queued jobs.",
+              "file": "queue.mjs",
+              "line": 9,
+              "command": "nl -ba queue.mjs",
+              "sha": "6383be8a0aee8e0dda436e883960d446864ab502"
+            },
+            {
+              "repo": "openclaw/review-fixture",
+              "label": "Shared cancellation boundary",
+              "detail": "Both immediate and queued service calls reach execute, which checks an already-aborted signal before transport invocation and passes the same signal to transport for in-flight handling.",
+              "file": "worker.mjs",
+              "line": 2,
+              "command": "nl -ba worker.mjs",
+              "sha": "6383be8a0aee8e0dda436e883960d446864ab502"
+            },
+            {
+              "repo": "openclaw/review-fixture",
+              "label": "Existing contract and main behavior",
+              "detail": "The base documents explicit FIFO draining and per-job failure isolation; its submit implementation accepts only queued and its worker does not forward cancellation. The requested capability is not already implemented on the supplied default-branch revision.",
+              "file": "service.mjs",
+              "line": 6,
+              "command": "git show 7568b7867a9ab132467430b2a11cdfdb11194bd0:service.mjs",
+              "sha": "7568b7867a9ab132467430b2a11cdfdb11194bd0"
+            },
+            {
+              "repo": "openclaw/review-fixture",
+              "label": "Policy and ownership scope",
+              "detail": "The complete root policy requires a self-contained, read-only review without other reviewers or external project contracts. Local feature history contains only the baseline and this change, so ownership beyond the baseline author remains uncertain.",
+              "file": "AGENTS.md",
+              "line": 1,
+              "command": "git log --format='%H %an %s' --all -- README.md service.mjs worker.mjs queue.mjs",
+              "sha": "6383be8a0aee8e0dda436e883960d446864ab502"
+            }
+          ],
+          "realBehaviorProof": {
+            "status": "missing",
+            "summary": "No runtime artifact is supplied for the changed createService and execute behavior; provide redacted terminal output or logs exercising cancellation through submit and drain with the actual transport, distinguishing cancellation from successful completion and showing subsequent queued work still runs.",
+            "evidenceKind": "none",
+            "needsContributorAction": true,
+            "dataModelCompatibility": "not_applicable"
+          }
+        }
+      },
+      {
+        "variant": "baseline",
+        "case": 1,
+        "startedAt": "2026-10-15T21:31:12.739Z",
+        "finishedAt": "2026-10-15T21:32:27.036Z",
+        "command": [
+          "/usr/bin/node",
+          "$OUTPUT/baseline-runner/dist/clawsweeper.js",
+          "review",
+          "--local-range",
+          "--target-repo",
+          "openclaw/review-fixture",
+          "--target-dir",
+          "$OUTPUT/baseline-target-1",
+          "--base",
+          "d024763f8a0f8db37666631f1c467210006b90cb",
+          "--codex-model",
+          "gpt-6-astra",
+          "--codex-timeout-ms",
+          "180000",
+          "--output-retention",
+          "debug",
+          "--artifact-dir",
+          "$OUTPUT/baseline-1"
+        ],
+        "exitCode": 0,
+        "signal": null,
+        "effectiveModel": "gpt-6-astra",
+        "reasoningEffort": "medium",
+        "sandbox": "read-only",
+        "artifactDir": "$OUTPUT/baseline-1",
+        "targetDir": "$OUTPUT/baseline-target-1",
+        "targetClean": true,
+        "load": {
+          "staticPromptBytes": 37960,
+          "schemaBytes": 36711,
+          "runtimeEnvelopeAndContextBytes": 6340,
+          "gitHubContextSectionBytes": 2881,
+          "requiredSchemaFields": 61
+        },
+        "promptSha256": "f07b11cb30d5e774dc60bfc202886d1bec9eea3564d10007323106c8d9f6d878",
+        "resultSha256": "734ca55025ac26778c189788a9a6eea377ec764a7b2c9a8cacf6ffc9a4a5eb27",
+        "result": {
+          "summary": "This PR adds cancellation support, but the default queued path discards the signal before execution, leaving the documented behavior incomplete.",
+          "systemContext": "createService accepts submissions, queues them by default, and sends drained or immediate tasks through execute to a caller-supplied transport; each submission returns its result promise.",
+          "reviewFindings": [
+            {
+              "title": "Preserve the AbortSignal when draining queued tasks",
+              "body": "Queued submissions store the new signal, but drain still calls execute({ input: task.input }, transport), dropping it. For example, submit \"report-42\" with a signal, abort its controller, then call drain: execute sees no signal and invokes transport instead of rejecting. Signals are also never forwarded for cancellation after queued work starts. Since queued execution is the default, the advertised feature fails on the normal path. Pass the complete task to execute from the drain callback.",
+              "priority": 2,
+              "confidenceScore": 1,
+              "file": "service.mjs",
+              "lineStart": 7,
+              "lineEnd": 7,
+              "lateFinding": false
+            }
+          ],
+          "overallCorrectness": "patch is incorrect",
+          "solutionAssessment": "Centralizing pre-execution cancellation and transport forwarding in execute is appropriate, but the queued path must preserve the task rather than reconstructing only its input.",
+          "evidence": [
+            {
+              "repo": "openclaw/review-fixture",
+              "label": "Introduced cancellation contract",
+              "detail": "The pinned diff adds signal to submitted tasks and checks and forwards it in execute; the README promises this behavior for queued and immediate submissions.",
+              "file": "worker.mjs",
+              "line": 2,
+              "command": "git diff --no-ext-diff --no-textconv --no-renames d024763f8a0f8db37666631f1c467210006b90cb aa3c4f6c974ad37c09ab559312037b4f78622b2f --",
+              "sha": "aa3c4f6c974ad37c09ab559312037b4f78622b2f"
+            },
+            {
+              "repo": "openclaw/review-fixture",
+              "label": "Queued execution loses cancellation",
+              "detail": "drain reconstructs each task as an object containing only input, so execute receives neither the queued signal's aborted state nor the signal to forward to transport.",
+              "file": "service.mjs",
+              "line": 10,
+              "command": "nl -ba service.mjs",
+              "sha": "aa3c4f6c974ad37c09ab559312037b4f78622b2f"
+            },
+            {
+              "repo": "openclaw/review-fixture",
+              "label": "Queue already retains the complete task",
+              "detail": "Queue.push stores the supplied task unchanged and Queue.drain passes that task to its callback, locating the loss in the service callback rather than the queue.",
+              "file": "queue.mjs",
+              "line": 9,
+              "command": "nl -ba queue.mjs",
+              "sha": "aa3c4f6c974ad37c09ab559312037b4f78622b2f"
+            },
+            {
+              "repo": "openclaw/review-fixture",
+              "label": "Default-branch behavior and history",
+              "detail": "The pinned default branch has no signal support. The local feature-history search reaches only the initial-service boundary and this patch; it establishes no earlier design rationale or authoritative feature owner.",
+              "file": "service.mjs",
+              "line": 6,
+              "command": "git log --all --format='%H %an %s' -G 'signal|abort|cancel|execute|drain' -- service.mjs worker.mjs README.md",
+              "sha": "d024763f8a0f8db37666631f1c467210006b90cb"
+            }
+          ],
+          "realBehaviorProof": {
+            "status": "missing",
+            "summary": "The supplied material contains no execution evidence for the changed submission-to-transport cancellation path; provide redacted terminal output or logs showing aborted queued work never reaches transport, an executing queued transport receives the original signal, and later queued work continues.",
+            "evidenceKind": "none",
+            "needsContributorAction": true,
+            "dataModelCompatibility": "not_applicable"
+          }
+        }
+      },
+      {
+        "variant": "baseline",
+        "case": 2,
+        "startedAt": "2026-10-15T21:32:27.052Z",
+        "finishedAt": "2026-10-15T21:33:40.159Z",
+        "command": [
+          "/usr/bin/node",
+          "$OUTPUT/baseline-runner/dist/clawsweeper.js",
+          "review",
+          "--local-range",
+          "--target-repo",
+          "openclaw/review-fixture",
+          "--target-dir",
+          "$OUTPUT/baseline-target-2",
+          "--base",
+          "d024763f8a0f8db37666631f1c467210006b90cb",
+          "--codex-model",
+          "gpt-6-astra",
+          "--codex-timeout-ms",
+          "180000",
+          "--output-retention",
+          "debug",
+          "--artifact-dir",
+          "$OUTPUT/baseline-2"
+        ],
+        "exitCode": 0,
+        "signal": null,
+        "effectiveModel": "gpt-6-astra",
+        "reasoningEffort": "medium",
+        "sandbox": "read-only",
+        "artifactDir": "$OUTPUT/baseline-2",
+        "targetDir": "$OUTPUT/baseline-target-2",
+        "targetClean": true,
+        "load": {
+          "staticPromptBytes": 37960,
+          "schemaBytes": 36711,
+          "runtimeEnvelopeAndContextBytes": 6458,
+          "gitHubContextSectionBytes": 2881,
+          "requiredSchemaFields": 61
+        },
+        "promptSha256": "21d6f4d4b60b6d3d5060eb482e871845f340ecef3c2afb5466d29fdf63eca906",
+        "resultSha256": "c48bc1fb6afd621e47b61bd1a549443ea8a658c16963b38e71ea796141688733",
+        "result": {
+          "summary": "No actionable correctness or security defect was found in the committed range. Cancellation is handled in the shared execution path, queued tasks retain their signal, and rejected tasks do not stop subsequent queued work. The default branch does not implement this capability.",
+          "systemContext": "The service accepts request inputs and caller-supplied transport, routes work directly or through an explicitly drained FIFO queue, and returns transport results through request promises.",
+          "reviewFindings": [],
+          "overallCorrectness": "patch is correct",
+          "solutionAssessment": "The implementation is appropriately small and uses the existing shared worker instead of introducing a competing cancellation path; explicit draining and transport-owned in-flight handling match the documented contract.",
+          "evidence": [
+            {
+              "repo": "openclaw/review-fixture",
+              "label": "Complete introduced change",
+              "detail": "The pinned diff adds signal capture, preserves the full task during draining, checks cancellation before transport, and documents transport-owned in-flight handling.",
+              "file": "service.mjs",
+              "line": 6,
+              "command": "git diff --no-ext-diff --no-textconv --no-renames d024763f8a0f8db37666631f1c467210006b90cb 5cdfd7e76f27fcd77787fd3e108a07798dde1709 --",
+              "sha": "5cdfd7e76f27fcd77787fd3e108a07798dde1709"
+            },
+            {
+              "repo": "openclaw/review-fixture",
+              "label": "Shared cancellation boundary",
+              "detail": "Both execution routes reach execute, which rejects already-aborted tasks and otherwise forwards the original signal to transport.",
+              "file": "worker.mjs",
+              "line": 2,
+              "command": "nl -ba worker.mjs",
+              "sha": "5cdfd7e76f27fcd77787fd3e108a07798dde1709"
+            },
+            {
+              "repo": "openclaw/review-fixture",
+              "label": "Queue failure isolation",
+              "detail": "The existing drain loop catches each execution rejection, rejects that job's promise, and continues processing later jobs.",
+              "file": "queue.mjs",
+              "line": 9,
+              "command": "nl -ba queue.mjs",
+              "sha": "5cdfd7e76f27fcd77787fd3e108a07798dde1709"
+            },
+            {
+              "repo": "openclaw/review-fixture",
+              "label": "Default-branch behavior",
+              "detail": "The base worker invokes transport with only the input and has no cancellation check.",
+              "file": "worker.mjs",
+              "line": 2,
+              "command": "git show d024763f8a0f8db37666631f1c467210006b90cb:worker.mjs",
+              "sha": "d024763f8a0f8db37666631f1c467210006b90cb"
+            },
+            {
+              "repo": "openclaw/review-fixture",
+              "label": "Feature-history boundary",
+              "detail": "Available path history contains the initial service snapshot and this change, with no earlier names or separate cancellation implementation; boundary blame does not establish earlier provenance.",
+              "file": "service.mjs",
+              "line": 6,
+              "command": "git log --all --format='%H %s' --name-status -- README.md service.mjs worker.mjs queue.mjs",
+              "sha": "d024763f8a0f8db37666631f1c467210006b90cb"
+            }
+          ],
+          "realBehaviorProof": {
+            "status": "missing",
+            "summary": "The supplied local review material contains source but no runtime evidence exercising cancellation through createService with a real transport; redacted terminal output covering pre-execution rejection, in-flight signal handling, and subsequent queued work would establish the changed behavior.",
+            "evidenceKind": "none",
+            "needsContributorAction": true,
+            "dataModelCompatibility": "not_applicable"
+          }
+        }
+      },
+      {
+        "variant": "baseline",
+        "case": 3,
+        "startedAt": "2026-10-15T21:33:40.178Z",
+        "finishedAt": "2026-10-15T21:35:00.437Z",
+        "command": [
+          "/usr/bin/node",
+          "$OUTPUT/baseline-runner/dist/clawsweeper.js",
+          "review",
+          "--local-range",
+          "--target-repo",
+          "openclaw/review-fixture",
+          "--target-dir",
+          "$OUTPUT/baseline-target-3",
+          "--base",
+          "7568b7867a9ab132467430b2a11cdfdb11194bd0",
+          "--codex-model",
+          "gpt-6-astra",
+          "--codex-timeout-ms",
+          "180000",
+          "--output-retention",
+          "debug",
+          "--artifact-dir",
+          "$OUTPUT/baseline-3"
+        ],
+        "exitCode": 0,
+        "signal": null,
+        "effectiveModel": "gpt-6-astra",
+        "reasoningEffort": "medium",
+        "sandbox": "read-only",
+        "artifactDir": "$OUTPUT/baseline-3",
+        "targetDir": "$OUTPUT/baseline-target-3",
+        "targetClean": true,
+        "load": {
+          "staticPromptBytes": 37960,
+          "schemaBytes": 36711,
+          "runtimeEnvelopeAndContextBytes": 6340,
+          "gitHubContextSectionBytes": 2881,
+          "requiredSchemaFields": 61
+        },
+        "promptSha256": "0de7fe7c4c62268d748667d114be166462d33b6bc8d882ee1764ed48c9340ab3",
+        "resultSha256": "1cd28cc66715c28c4fbcc0d3bcabc6bd1a035fd61be2c7749daec8ce19daf996",
+        "result": {
+          "summary": "No actionable correctness or security defect was found in the committed range. Queued submissions retain their signal through the stored execution callback; the signal-stripping fallback in drain is not used for these submissions. The default branch does not implement cancellation.",
+          "systemContext": "The service accepts inputs and a caller-supplied transport, dispatches requests immediately or through an explicitly drained FIFO queue, and returns transport results through request promises.",
+          "reviewFindings": [],
+          "overallCorrectness": "patch is correct",
+          "solutionAssessment": "The implementation uses the queue's existing callback extension point rather than introducing a competing cancellation mechanism, and both dispatch paths reach the same abort check.",
+          "evidence": [
+            {
+              "repo": "openclaw/review-fixture",
+              "label": "Queued requests preserve the complete task",
+              "detail": "The introduced callback captures task, including signal, and invokes the same worker used for immediate requests.",
+              "file": "service.mjs",
+              "line": 8,
+              "command": "git diff --no-ext-diff --no-textconv --no-renames 7568b7867a9ab132467430b2a11cdfdb11194bd0 6383be8a0aee8e0dda436e883960d446864ab502 --",
+              "sha": "6383be8a0aee8e0dda436e883960d446864ab502"
+            },
+            {
+              "repo": "openclaw/review-fixture",
+              "label": "Existing queue callback and failure isolation",
+              "detail": "Queue.drain prefers each job's stored run callback over its fallback executor and catches each failure before processing the next job.",
+              "file": "queue.mjs",
+              "line": 9,
+              "command": "nl -ba queue.mjs",
+              "sha": "6383be8a0aee8e0dda436e883960d446864ab502"
+            },
+            {
+              "repo": "openclaw/review-fixture",
+              "label": "Cancellation boundary",
+              "detail": "The worker rejects an already-aborted task before transport invocation and otherwise passes the original signal to transport, matching the documented delegation of in-flight cancellation.",
+              "file": "worker.mjs",
+              "line": 2,
+              "command": "nl -ba worker.mjs",
+              "sha": "6383be8a0aee8e0dda436e883960d446864ab502"
+            },
+            {
+              "repo": "openclaw/review-fixture",
+              "label": "Default-branch behavior",
+              "detail": "The base service accepts only the queued option and constructs tasks containing input alone; cancellation is not already implemented.",
+              "file": "service.mjs",
+              "line": 6,
+              "command": "git show 7568b7867a9ab132467430b2a11cdfdb11194bd0:service.mjs",
+              "sha": "7568b7867a9ab132467430b2a11cdfdb11194bd0"
+            },
+            {
+              "repo": "openclaw/review-fixture",
+              "label": "Available feature history",
+              "detail": "Path history contains the initial service and this change, with no renamed predecessors or recorded design discussion. The base documentation establishes explicit FIFO draining and per-job failure isolation.",
+              "file": "README.md",
+              "line": 3,
+              "command": "git log --all --format='%H %an %cn %s' --name-status --find-renames -- README.md service.mjs worker.mjs queue.mjs",
+              "sha": "7568b7867a9ab132467430b2a11cdfdb11194bd0"
+            }
+          ],
+          "realBehaviorProof": {
+            "status": "missing",
+            "summary": "Only source and documentation are available: provide redacted output exercising createService with a real transport, showing canceled queued work never reaches transport, immediate and started queued requests receive the same signal, and a later queued request completes.",
+            "evidenceKind": "none",
+            "needsContributorAction": true,
+            "dataModelCompatibility": "not_applicable"
+          }
+        }
+      }
+    ]
+  },
+  "schemaDeliveryProof": {
+    "startedAt": "2026-10-15T21:27:11.418Z",
+    "finishedAt": "2026-10-15T21:27:14.582Z",
+    "head": "b8d4ff27b07fc9b501fdb078be236646ee56d42c",
+    "node": "v26.8.2",
+    "platform": "linux",
+    "command": [
+      "/usr/bin/node",
+      "$WORKTREE/docs/proof/holistic-pr-review/schema-delivery.mjs",
+      ".artifacts/rebase-20261015/schema-delivery"
+    ],
+    "scanner": "Normal mandatory native TruffleHog admission; no scanner substitute or admission override",
+    "surface": "runAgentProcess -> runOpenclawProcess -> worker -> controlled CLI --message-file consumer",
+    "limits": "The controlled consumer is not the OpenClaw model. This proves delivery and filesystem/process integration only, not OpenClaw model quality or schema enforcement by a model.",
+    "auth": "No inference keys or workflow credentials supplied to the controlled consumer",
+    "input": {
+      "authoredPromptBytes": 42132,
+      "schemaBytes": 36711,
+      "deliveredMessageBytes": 78987,
+      "framingBytes": 144,
+      "deliveredSha256": "07d6706956c34f2e9caed8433520fd2ee11cc89b24e0e2d7e332e24893441dec",
+      "schemaSha256": "85502de3a4d7e309b1ea09a9be2d3b9e23eea8916ca55df7cd21445efa2752b4"
+    },
+    "checks": [
+      "schema absent: exact original message, no added header",
+      "full delivered message counted against prompt-file quota before invocation/persistence",
+      "malformed schema refused before consumer invocation"
+    ],
+    "sourceSha256": {
+      "src/agent-runner.ts": "d1a196712a7677720776672f63c6d9511d3af4ba82823d89a333c2bb01264c35",
+      "src/agent-input-scan.ts": "9d4d71793cf2c182e84380ca9787cd3957008220475dc9fabb8701a66df139bb",
+      "src/openclaw-process.ts": "d1f5cf30e28215c904cb05e1d9fcb882c1e952bd1f5680dfa98fdad4d332503c",
+      "src/clawsweeper-review-runtime.ts": "946404ac4fa36e2f2b5b9abf581f0c220d9304ea6d7a03795074832679b1fb1b",
+      "src/clawsweeper-review-core.ts": "1f8855c9ae28351972ecf4319dd85ff46d15fc1355c890a7172481b10b332c2f",
+      "src/clawsweeper-review-policy-hash.ts": "5dfc5885e3a8a76012c018b401bb6200ec31f5e1c20c0e968dfdd4df07cfa1ae",
+      "src/review-prompt-sections.ts": "b20e41a82e72aa4f9eda57c2d77c941335a87394e3a0547d340876b472ec6a20",
+      "src/repository-profiles.ts": "a1b2de3d53999bed408c91e9bb7abaa51f88f87e68081c372c4910a4b8be348b"
+    }
+  }
+}

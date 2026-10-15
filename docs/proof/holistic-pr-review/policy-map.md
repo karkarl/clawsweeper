@@ -2,7 +2,7 @@
 
 - Status: source ownership map, not execution evidence
 - Owner: ClawSweeper review maintainers
-- Selected main: fe750d1779208b067c1f694dba70f494cb29c401
+- Selected main: 291ab8a0090a8f76c08e4d0e39ea4cf1fdcbe0c0
 - Update trigger: an opening, canonical policy owner, or schema-delivery boundary changes
 
 ## Retained unique work
@@ -11,7 +11,8 @@
   contract: coherent before/after behavior, relevant end-to-end paths, challenging
   findings against source, and model-chosen investigation.
 - `review_procedure` remains the opening slot. The issue opening reconstructs
-  selected main's core exactly; its kind-specific instructions remain upstream's.
+  selected main's core guidance; paragraph separation differs, not instruction
+  content. Its kind-specific instructions remain upstream's.
 - OpenClaw captures the schema through a bounded regular-file read, validates
   UTF-8 and a JSON object-or-boolean root, and scans the complete delivered
   message plus captured schema before diagnostics or invocation. This is not a
@@ -30,7 +31,7 @@
 | Repository-specific instructions and release-note policy | `src/repository-profiles.ts` |
 | Field descriptions, labels, typed readiness and judgment ownership | Current decision schema and existing parser/presentation code |
 | Compact linked context and host-prefetched history | Existing context/hydration and history modules |
-| Prompt assembly, profile rendering, hashing and telemetry | Existing template/profile APIs in the review runtime |
+| Prompt assembly, profile rendering, hashing and telemetry | `src/clawsweeper-review-core.ts`, `src/clawsweeper-review-policy-hash.ts`, and canonical applicability/profile APIs |
 
 The branch-only readiness, close, and continuity files duplicated these owners
 and are removed. No alternate protection-based policy router is introduced.
@@ -47,7 +48,7 @@ schema-delivery tests exercise capture, admission, quotas, and consumer bytes.
 
 The original JSON receipts describe pre-rebase runs and retain their original
 identities and metrics. They do not prove this integration. The separate
-[October 9 proof](rebase.md) and rebase receipt record the executed current inputs. `run-proof.mjs`
+[October 15 proof](rebase-20261015.md) and dated receipt record the executed current inputs. `run-proof.mjs`
 builds selected main from its real source and builds the current candidate,
 compares assembled issue instructions, and records new measurements when the
 owner executes it. `schema-delivery.mjs` exercises the real delivery path through

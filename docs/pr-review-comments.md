@@ -36,7 +36,7 @@ The existing core, [`PR template`](../prompts/review-item-pr.md),
 Profiles select the applicable close reasons and repository instructions; PR
 readiness and re-review continuity remain in the canonical PR template. The issue
 opening in [`prompts/review-issue.md`](../prompts/review-issue.md) reproduces the
-upstream opening, preserving assembled issue instructions.
+upstream opening, preserving issue guidance with only paragraph-boundary differences.
 
 The current decision schema owns field definitions and descriptions; retired
 fields are not restored. `summary` remains the verdict and rationale, with

@@ -2,8 +2,8 @@
 
 - Status: current opt-in harness with source-qualified historical and rebase receipts
 - Owner: ClawSweeper review maintainers
-- Selected main: fe750d1779208b067c1f694dba70f494cb29c401
-- Current execution: [October 9 rebased-source proof and limits](rebase.md)
+- Selected main: 291ab8a0090a8f76c08e4d0e39ea4cf1fdcbe0c0
+- Current execution: [October 15 rebased-source proof and limits](rebase-20261015.md)
 
 ## Current source contract
 
@@ -42,7 +42,7 @@ Codex retains its original prompt bytes and output-schema transport.
   harness retains its explicit native model selection, read-only sandbox,
   normal admission, and fixed per-review timeout. It is opt-in and paid, not CI.
 - Observable results: completed decisions, source-backed findings or refutations,
-  unchanged target checkouts, exact issue-prompt equality, captured prompt/schema
+  unchanged target checkouts, issue-guidance equality (paragraph boundaries may differ), captured prompt/schema
   sizes, and byte-identical admitted/delivered schema messages.
 - Artifacts: new output-directory receipts, source and prompt hashes, complete
   prompts/results, process logs, and actual environment identifiers. Do not
@@ -97,7 +97,8 @@ count, source identities, outcomes, and development attempts.
 controlled delivery experiment. Neither receipt is relabeled or used as proof
 of current main's templates, schema, instruction sizes, or this resolution.
 
-The [October 9 proof](rebase.md) records current-base measurements and execution.
+The [October 9 proof](rebase.md) records historical measurements and execution.
+The [October 15 proof](rebase-20261015.md) records the selected-base refresh.
 Historical test totals, native reviews, and instruction-size reductions do not
 establish current results. Run focused prompt/context/policy/provenance and
 agent/schema-delivery coverage, then `pnpm run check`, current controlled proof,
