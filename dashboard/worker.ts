@@ -131,6 +131,11 @@ import {
   type SnapshotUploadOperation,
 } from "./record-snapshot-uploads.ts";
 import {
+  readRecordSnapshotRange,
+  snapshotFailure,
+  type RecordSnapshotRange,
+} from "./record-snapshots.ts";
+import {
   githubWebhookReadModelDeliveryFromWebhook,
   type GithubWebhookReadModelDelivery,
 } from "./github-webhook-read-model.ts";
@@ -1077,7 +1082,7 @@ export default {
       return authenticatedSnapshotUpload(request, env, operation);
     }
     if (url.pathname === "/internal/state/records/snapshots/chunk" && request.method === "POST")
-      return authenticatedExactReviewQueueRequest(request, env, "/records/snapshots/chunk");
+      return authenticatedSnapshotRange(request, env);
     if (url.pathname.startsWith("/internal/state/blobs/") && request.method === "POST") {
       const operation = url.pathname.slice("/internal/state/blobs/".length);
       if (STATE_BLOB_OPERATIONS.includes(operation as StateBlobOperation)) {
@@ -5722,6 +5727,22 @@ async function authenticatedSnapshotUpload(
     (snapshot) => snapshotDescriptorRequest(env, "register", snapshot),
     (snapshot) => snapshotDescriptorRequest(env, "discard", snapshot),
   );
+}
+
+async function authenticatedSnapshotRange(request: Request, env: DashboardEnv) {
+  const response = await authenticatedExactReviewQueueRequest(
+    request,
+    env,
+    "/records/snapshots/range",
+  );
+  if (!response.ok) return response;
+  try {
+    const range = (await response.json()) as RecordSnapshotRange;
+    return await readRecordSnapshotRange(env.STATE_SNAPSHOTS, range);
+  } catch (error) {
+    const { body, status } = snapshotFailure(error);
+    return json(body, status);
+  }
 }
 
 function snapshotDescriptorRequest(env, operation: "register" | "discard", snapshot) {
