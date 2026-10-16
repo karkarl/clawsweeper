@@ -53,9 +53,9 @@ only PR reviews.
 Both opening assets and all canonical templates participate in the review policy
 hash. The durable comment contract, mandatory policy gates, publication authority,
 model defaults, and call count are unchanged. There is no new Bay data contract.
-The [proof notes](proof/holistic-pr-review/README.md) distinguish historical
-receipts from the current opt-in harness; historical results do not validate the
-rebased source or establish improved review accuracy.
+The [proof record](proof/holistic-pr-review/README.md) binds the executed
+observations to their inputs and links the retained reproduction tools. It does
+not claim improved review accuracy.
 
 ## Durable Comment Shape
 

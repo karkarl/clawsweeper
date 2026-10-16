@@ -1,105 +1,46 @@
-# Engineering-review integration proof
+# Engineering-review proof
 
-- Status: current opt-in harness with source-qualified historical and rebase receipts
+- Status: historical execution, retained for the unchanged production inputs below
 - Owner: ClawSweeper review maintainers
-- Selected main: 291ab8a0090a8f76c08e4d0e39ea4cf1fdcbe0c0
-- Current execution: [October 15 rebased-source proof and limits](rebase-20261015.md)
+- Verified source: `97fd08368e2f1b6e797663ff419cfcd67ac396eb`; base: `291ab8a0090a8f76c08e4d0e39ea4cf1fdcbe0c0`
+- Update trigger: any production source, prompt, schema, or dependency change
 
-## Current source contract
+## Claim and execution
 
-The engineering opening asks for coherent before/after system behavior, relevant
-end-to-end paths, source-challenged findings, and a grounded completion decision.
-It leaves the investigation to the reviewer. The existing core, PR/issue templates,
-close-reason guidance, repository profiles, standing rules, and current schema
-remain authoritative. The branch's duplicate policy files are removed; policy
-is not conditionally hidden by a new protection or continuity router.
+The production PR compositor adds the engineering opening without replacing
+canonical policy; OpenClaw scans and delivers the same bounded schema message.
+On October 15, native Linux x64 / Node26.8.2 / Codex0.147.0 ran both actual
+production local-range reviewers with `gpt-6-astra`, normal medium effort,
+read-only sandbox and 180-second budgets. No container image or lease was used.
+The three fixtures covered queued cancellation, clean forwarding, and a callback
+false-positive control. Both baseline and candidate found the one P2 defect and
+returned no findings for either control; all six runs completed with clean targets.
+The separate real scanner → OpenClaw worker → controlled CLI proof delivered
+78,987 bytes with matching diagnostics; absent schema, quota and malformed-schema
+checks passed. This tests transport, not live OpenClaw model compliance.
 
-The issue opening uses the `review_procedure` slot to reproduce selected main's
-core. Both complete issue prompts and the slot reconstruction are compared by
-the harness. The schema is read from each built variant; its field count is
-measured, not pinned to an earlier branch value. The
-[ownership inventory](policy-map.md) records what is unique and what main already
-owns. No model default, permission, queue, apply, publication, or Bay contract
-changes are part of this integration.
+Production inputs are unchanged by the subsequent evidence-only reduction.
+The run occurred during a staged rebase; its exact HEAD, diff, source/prompt
+hashes, commands and observations remain in the immutable [execution receipt][receipt].
+It was bound to the verified source above by matching all recorded hashes.
+For example, the schema SHA-256 is `85502de3a4d7e309b1ea09a9be2d3b9e23eea8916ca55df7cd21445efa2752b4`.
+This is evidence reuse by source equality, not a new model execution.
 
-OpenClaw already appends the output schema on main. The retained transport change
-makes that a bounded, validated capture before admission: one complete message
-is scanned and then delivered, with no post-scan schema reread. The message's
-schema and framing count toward quotas, deadline, and CLI size limits. Native
-Codex retains its original prompt bytes and output-schema transport.
+## Reproduction and limits
 
-## Proof contract
-
-- Claim: current production prompt composition retains canonical policy and
-  unchanged issue instructions while adding the engineering opening; schema
-  delivery admits the same complete bytes the OpenClaw consumer receives.
-- Surfaces: production prompt assembly, native local-range review, and
-  `runAgentProcess` through the OpenClaw worker's message-file boundary.
-- Scenarios: a queued cancellation defect, a clean signal-forwarding control,
-  and an apparent signal-loss path disproved by the queue's captured callback;
-  separate delivery checks cover schema passthrough and refusals.
-- Environment: Node 24 or newer and existing installed dependencies. The model
-  harness retains its explicit native model selection, read-only sandbox,
-  normal admission, and fixed per-review timeout. It is opt-in and paid, not CI.
-- Observable results: completed decisions, source-backed findings or refutations,
-  unchanged target checkouts, issue-guidance equality (paragraph boundaries may differ), captured prompt/schema
-  sizes, and byte-identical admitted/delivered schema messages.
-- Artifacts: new output-directory receipts, source and prompt hashes, complete
-  prompts/results, process logs, and actual environment identifiers. Do not
-  overwrite the historical receipts to imply they describe the rebased source.
-- Limits: three self-authored fixtures are not a review-quality benchmark.
-  Delivery to a controlled consumer proves transport, not model compliance or
-  semantic review quality. A successful source trace is not execution of the
-  candidate behavior. Current runtime proof and native review remain owner work.
-
-## Running current proof
-
-With dependencies already installed, use fresh output directories:
+In a separate checkout of the verified source with admitted dependencies, use
+`pnpm run build`, then the retained [native harness][native] and [delivery harness][delivery]:
 
 ```bash
-node docs/proof/holistic-pr-review/run-proof.mjs .artifacts/astra-review/controlled
-node docs/proof/holistic-pr-review/schema-delivery.mjs .artifacts/astra-review/schema-delivery
+node docs/proof/holistic-pr-review/run-proof.mjs .artifacts/review-proof-new
+node docs/proof/holistic-pr-review/schema-delivery.mjs .artifacts/delivery-proof-new
 ```
 
-`run-proof.mjs` archives selected main's real source, configuration, schema, and
-four canonical templates into a separate runner directory and compiles it with
-the existing dependencies. It also builds the current candidate. It does not
-swap old monolithic assets into the new compositor. Before invoking a model,
-it checks slot reconstruction and compares complete issue prompts for OpenClaw,
-ClawSweeper, and ClawHub using both production runtimes.
+The opt-in harnesses have no production or CI consumer; they and raw outputs
+remain at that commit instead of being duplicated in the current patch.
+Six controlled observations are not a review-quality, speed or cost benchmark.
+Tests, current-head review and gate status are reported separately in the PR body.
 
-Both variants use the same three request-service fixtures and fresh clones,
-excluding prior local review history. The synthetic `openclaw/review-fixture`
-identity names no live GitHub repository. The harness records actual static
-instructions, schema size and field count, and runtime/context bytes separately.
-There is no assumed reduction relative to a superseded baseline. The optional
-`--candidate-only` argument retains the baseline build and equivalence checks;
-an optional case number 1–3 selects one candidate case.
-
-The schema-delivery harness uses the freshly built candidate, normal mandatory
-admission, and a controlled message-file consumer without inference credentials.
-It records message/schema hashes and checks no-schema passthrough, a complete
-message quota refusal, and malformed-schema refusal. The consumer is not an
-OpenClaw model. Standalone use requires a fresh `pnpm run build` first.
-
-Neither harness is executed automatically. The owner records the actual host
-or validation provider, image/lease when applicable, current head, artifacts,
-and limits for a new run; an earlier native-host environment is not evidence of
-the environment used now.
-
-## Historical receipts
-
-[receipt.json](receipt.json) preserves the pre-rebase native model experiment
-against the additive branch baseline
-`cdb49e07f72207aec7a198eb86b5479b29a9edb5`, including its original prompts, schema
-count, source identities, outcomes, and development attempts.
-[schema-delivery-receipt.json](schema-delivery-receipt.json) preserves the earlier
-controlled delivery experiment. Neither receipt is relabeled or used as proof
-of current main's templates, schema, instruction sizes, or this resolution.
-
-The [October 9 proof](rebase.md) records historical measurements and execution.
-The [October 15 proof](rebase-20261015.md) records the selected-base refresh.
-Historical test totals, native reviews, and instruction-size reductions do not
-establish current results. Run focused prompt/context/policy/provenance and
-agent/schema-delivery coverage, then `pnpm run check`, current controlled proof,
-and the required fresh native review before publication or landing.
+[receipt]: https://github.com/openclaw/clawsweeper/blob/97fd08368e2f1b6e797663ff419cfcd67ac396eb/docs/proof/holistic-pr-review/rebase-20261015-receipt.json
+[native]: https://github.com/openclaw/clawsweeper/blob/97fd08368e2f1b6e797663ff419cfcd67ac396eb/docs/proof/holistic-pr-review/run-proof.mjs
+[delivery]: https://github.com/openclaw/clawsweeper/blob/97fd08368e2f1b6e797663ff419cfcd67ac396eb/docs/proof/holistic-pr-review/schema-delivery.mjs
