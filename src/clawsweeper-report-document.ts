@@ -76,8 +76,9 @@ export function localCheckoutAccessSourceForDecision(
 
 export function reviewStatusForDecision(
   decision: Pick<Decision, "localCheckoutAccess" | "summary"> &
-    Partial<Pick<Decision, "closeReason" | "oversizedPullRequest">>,
+    Partial<Pick<Decision, "closeReason" | "oversizedPullRequest" | "hanselmanReview">>,
 ): "complete" | "failed" {
+  if (decision.hanselmanReview?.status === "incomplete") return "failed";
   if (
     decision.closeReason === "oversized_pull_request" &&
     parseOversizedPullRequestEvidence(decision.oversizedPullRequest)
@@ -611,7 +612,7 @@ regression_provenance_related_pr_number: ${suspectedRegressionProvenance?.relate
 regression_provenance_related_repo: ${suspectedRegressionProvenance?.relatedRepo ?? "unknown"}
 review_policy: ${options.reviewPolicy}
 review_model: ${options.runtime.model}
-review_reasoning_effort: ${options.runtime.reasoningEffort}
+${options.runtime.strategy ? `review_strategy: ${options.runtime.strategy}\n` : ""}${options.runtime.hanselman ? `review_strategy_provenance: ${JSON.stringify(options.runtime.hanselman).replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029")}\n` : ""}review_reasoning_effort: ${options.runtime.reasoningEffort}
 review_sandbox: ${options.runtime.sandboxMode ?? "unknown"}
 review_service_tier: ${options.runtime.serviceTier || "default"}
 review_prompt_chars: ${reviewTelemetryNumber(options.runtime.promptChars)}

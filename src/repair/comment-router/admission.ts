@@ -13,6 +13,7 @@ import {
 } from "../comment-command-text.js";
 import { asJsonObject, type JsonObject, type JsonValue, type LooseRecord } from "../json-types.js";
 import { markerAttributes } from "../markers.js";
+import { hanselmanCommand } from "../../review-strategy.js";
 
 export const DEFAULT_ALLOWED_REPOSITORY_PERMISSIONS = ["admin", "maintain", "write"];
 
@@ -44,6 +45,7 @@ export function isMaintainerCommandAllowed({
 }
 
 export function isAuthorReadOnlyCommandAllowed({ command, target }: LooseRecord) {
+  if (hanselmanCommand(String(command?.command ?? ""))) return false;
   const intent = String(command?.intent ?? "");
   if (intent !== "re_review") return false;
   const author = normalizedLogin(command?.author);

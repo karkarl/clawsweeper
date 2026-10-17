@@ -38,6 +38,7 @@ import type {
 import { PUBLIC_CODEX_MODEL } from "./codex-env.js";
 import { codexItemProfile } from "./codex-item-profile.js";
 import { UserFacingCommandError } from "./command.js";
+import { assertReviewStrategyTarget } from "./review-strategy.js";
 
 import { isReviewedPrActivityCursor } from "./review-activity-cursor.js";
 import { previousClawSweeperReviewDigest } from "./clawsweeper-review-comments.js";
@@ -258,6 +259,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       batchSize,
       maxPages,
       model,
+      strategy,
       sandboxMode,
       timeoutMs,
       expectedSourceRevision,
@@ -558,6 +560,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         let itemRecoveryRequired = false;
         const previousReviewMutationRunner = dependencies.activeReviewMutationRunner;
         try {
+        assertReviewStrategyTarget(strategy, item.repo, item.kind);
         startReviewActionLedgerItem(reviewLedger, item);
         dependencies.activeReviewMutationRunner = reviewMutationRunner(reviewLedger, item);
         const pullObservedAt = prAdmissionInput ? prAdmissionInput.observedAt : new Date().toISOString();
@@ -1386,7 +1389,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           reviewOutputMediaLimits(outputBudget, proofScratchDir), writeOutputMetadata,
         );
         const { decision, runtime, codexFailure, codexFailureRetryable, snapshotHash } = runPreparedReviewItem({
-          item, context, git, model, sandboxMode, localOnly, localRange: false,
+          item, context, git, model, sandboxMode, localOnly, localRange: false, strategy,
           reviewOpenclawDir, reviewTreesDir, additionalPrompt, proofScratchDir,
           preparedMediaProof, resolveProvenancePull, shardIndex, shardCount, timeoutMs,
           humanLocalReview, outputSelection, outputBudget, itemOutputBudget, codexWorkDir,

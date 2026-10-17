@@ -1,4 +1,5 @@
 import { commandStatusMarker } from "./markers.ts";
+import type { ReviewStrategy } from "../review-strategy.js";
 
 export type DirectReReviewOrigin = "hosted_webhook" | "comment_router";
 
@@ -17,6 +18,7 @@ export type DirectReReviewDecision = {
   commandOrigin: DirectReReviewOrigin;
   commandStatusMarker: string;
   additionalPrompt: string;
+  reviewStrategy?: ReviewStrategy;
   statusCommentId?: number;
   sourceHeadSha?: string;
   sourceBaseSha?: string;
@@ -164,7 +166,8 @@ export function validateDirectReReviewIntake(value: unknown): DirectReReviewInta
     Object.hasOwn(decision, "sourceUpdatedAt") ||
     Object.hasOwn(decision, "sourceBaseSha") ||
     Object.hasOwn(decision, "sourceIsDraft") ||
-    Object.hasOwn(decision, "sourceContentRevision")
+    Object.hasOwn(decision, "sourceContentRevision") ||
+    Object.hasOwn(decision, "reviewStrategy")
   ) {
     return null;
   }

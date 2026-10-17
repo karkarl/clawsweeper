@@ -61,6 +61,8 @@ everything else requires human comparison with current main.
   boundaries
 - [Issue review advisory labels](work-lane.md) — active; structured review labels
 - [Review cache](review-cache.md) — active; reusable review-state contract
+- [Hanselman review](hanselman-review.md) — automatic complementary Windows Node-only dual-model
+  review, canonical skill ownership and hosted rollout gates
 - [Intake triage](intake-triage.md) — active; bounded preliminary classification
 - [Local review preflight summary](portable-review-receipt.md) — proposed
   local-range export; bounded advisory PR-body handoff

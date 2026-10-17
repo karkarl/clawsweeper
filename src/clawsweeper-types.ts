@@ -614,6 +614,9 @@ export interface Decision {
   overallConfidenceScore: number;
   /** Runner-owned repository inspection result. Never populated from model output. */
   localCheckoutAccess?: "verified" | "unverified";
+  hanselmanReview?:
+    | import("./hanselman-contract.js").HanselmanProvenance
+    | import("./hanselman-contract.js").HanselmanIncompleteProvenance;
   /** Runner-owned failure classification for scheduled infrastructure retries. */
   checkoutInspectionFailed?: boolean;
   codexTerminalFailure?: boolean;
@@ -725,6 +728,10 @@ export interface Action {
 }
 
 export interface ReviewRuntime {
+  strategy?: import("./review-strategy.js").ReviewStrategy;
+  hanselman?:
+    | import("./hanselman-contract.js").HanselmanProvenance
+    | import("./hanselman-contract.js").HanselmanIncompleteProvenance;
   model: string;
   reasoningEffort: string;
   sandboxMode?: string;

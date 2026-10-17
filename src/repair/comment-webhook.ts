@@ -28,6 +28,7 @@ import {
   reReviewContextFromClawSweeperComment,
 } from "./comment-command-text.js";
 import { directReReviewIntake } from "./direct-re-review-admission.js";
+import { hanselmanCommand } from "../review-strategy.js";
 import { postExactReviewCommandIntake } from "./exact-review-command-queue.js";
 import {
   compareCommandAckKeepPriority,
@@ -518,6 +519,7 @@ function isAuthorReadOnlyWebhookCommand({
 }) {
   const parsed = parseCommand(String(comment.body ?? ""));
   if (parsed?.intent !== "re_review") return false;
+  if (hanselmanCommand(String(parsed.command ?? ""))) return false;
   const commentAuthor = normalizedLogin(asJsonObject(comment.user).login);
   const issueAuthor = normalizedLogin(asJsonObject(issue.user).login);
   return Boolean(commentAuthor && issueAuthor && commentAuthor === issueAuthor);

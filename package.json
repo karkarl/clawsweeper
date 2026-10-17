@@ -83,6 +83,7 @@
     "crabbox:warmup": "crabbox warmup"
   },
   "dependencies": {
+    "@github/copilot-sdk": "1.0.22",
     "yaml": "^2.9.0",
     "yauzl": "3.4.0"
   },

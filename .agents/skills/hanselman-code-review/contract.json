@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "reviewers": [
+    { "model": "claude-opus-5.5", "reasoningEffort": "high", "contextTier": "default" },
+    { "model": "gpt-6-astra", "reasoningEffort": "high", "contextTier": "long_context" }
+  ],
+  "coordinator": {
+    "model": "gpt-6-astra",
+    "reasoningEffort": "high",
+    "contextTier": "long_context"
+  },
+  "severityPriority": { "CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3 },
+  "limits": {
+    "maxFindingsPerReviewer": 40,
+    "maxReadCallsPerSession": 80,
+    "maxReadBytesPerSession": 2097152,
+    "maxAiCreditsPerSession": 30
+  },
+  "upstream": "openclaw/openclaw-windows-node@4244a48069e2d96ac6c68f0b4801c5f6d1ec1278"
+}

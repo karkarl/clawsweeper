@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { isHanselmanProvenance } from "./hanselman-contract.js";
 import { createDecisionParser } from "./clawsweeper-decision-parser.js";
 import { parseOversizedPrSourceSnapshot } from "./clawsweeper-oversized-pr-freshness.js";
 import { parseOversizedPullRequestEvidence } from "./clawsweeper-oversized-pr-policy.js";
@@ -271,6 +272,7 @@ function parseStoredDecision(value: unknown, subject: ReviewRecordSubject): Deci
     localCheckoutAccess,
     checkoutInspectionFailed,
     codexTerminalFailure,
+    hanselmanReview,
     fixedPullRequest,
     regressionProvenance,
     ...schemaFields
@@ -313,6 +315,9 @@ function parseStoredDecision(value: unknown, subject: ReviewRecordSubject): Deci
     ),
     runnerField("checkoutInspectionFailed", checkoutInspectionFailed, flag),
     runnerField("codexTerminalFailure", codexTerminalFailure, flag),
+    runnerField("hanselmanReview", hanselmanReview, (field) =>
+      isHanselmanProvenance(field) ? field : null,
+    ),
     fixedPullRequest === undefined
       ? {}
       : { fixedPullRequest: parseFixedPullRequest(fixedPullRequest) },

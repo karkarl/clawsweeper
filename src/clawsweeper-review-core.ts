@@ -20,6 +20,11 @@ import {
   serializeReviewContext,
 } from "./agent-input-scan-fixtures.js";
 import { stringArg, type Args } from "./clawsweeper-args.js";
+import { HanselmanProcessError, runHanselmanProcess } from "./hanselman-process.js";
+import { combineHanselmanAssessment, complementaryHanselmanEvidence } from "./hanselman-review.js";
+import { incompleteHanselmanProvenance, type HanselmanFinding } from "./hanselman-contract.js";
+import { neutralizeOwnedSectionSpoofing } from "./clawsweeper-report-helpers.js";
+import { assertReviewStrategyTarget, type ReviewStrategy } from "./review-strategy.js";
 
 import {
   mediaProofRuntimeHints,
@@ -98,6 +103,9 @@ type CodexProcessFailure = {
 };
 
 export interface ReviewRuntimeDependencies {
+  runReviewProcess?: typeof runAgentProcess;
+  inspectReviewCheckout?: typeof runAgentCheckoutInspection;
+  runHanselman?: typeof runHanselmanProcess;
   reviewItemPromptPaths: ReviewItemPrompts;
   decisionSchemaPath: string;
   prCloseCoverageProofPromptPath: string;
@@ -126,6 +134,9 @@ export function createReviewCoreRuntime({
   defaultRootCauseCluster,
   parseDecision,
   ensureDir,
+  runReviewProcess = runAgentProcess,
+  inspectReviewCheckout = runAgentCheckoutInspection,
+  runHanselman = runHanselmanProcess,
 }: Omit<ReviewRuntimeDependencies, "targetRepo" | "ghJson">) {
   let reviewPromptTemplatesCache: ReviewItemPrompts | undefined;
   let reviewDecisionSchemaCache: string | undefined;
@@ -783,7 +794,7 @@ ${extra}
         stderr: "",
       };
     }
-    return runAgentCheckoutInspection({
+    return inspectReviewCheckout({
       schemaPath: CLAWSWEEPER_DECISION_SCHEMA_PATH,
       scanSource: options.scanSource,
       initialPrompt: options.initialPrompt,
@@ -810,6 +821,7 @@ ${extra}
   }
 
   function runCodex(options: {
+    strategy?: ReviewStrategy;
     item: Item;
     context: ItemContext;
     git: GitInfo;
@@ -833,6 +845,7 @@ ${extra}
     quietLogs?: boolean;
     extraCodexConfig?: string[];
   }): Decision {
+    assertReviewStrategyTarget(options.strategy ?? "single", options.item.repo, options.item.kind);
     if (!Number.isSafeInteger(options.resultFileBytes) || options.resultFileBytes <= 0) {
       throw new UserFacingCommandError("Review result output requires a positive byte limit.");
     }
@@ -904,6 +917,88 @@ ${extra}
         retryable: true,
       });
     }
+    function complementAssessment(baseline: Decision): Decision {
+      if (options.strategy !== "hanselman") return baseline;
+      const headSha = nonBlankStringOrUndefined(asRecord(pull.head).sha) ?? "";
+      const baseSha = nonBlankStringOrUndefined(asRecord(pull.base).sha) ?? "";
+      const previousHeadSha = nonBlankStringOrUndefined(
+        asRecord(options.context.previousClawSweeperReview).reviewedSha,
+      );
+      try {
+        const result = runHanselman(
+          {
+            repo: options.item.repo,
+            kind: options.item.kind,
+            headSha,
+            baseSha,
+            ...(previousHeadSha ? { previousHeadSha } : {}),
+            prompt: complementaryHanselmanEvidence(prompt, baseline),
+            schema: readFileSync(CLAWSWEEPER_DECISION_SCHEMA_PATH, "utf8"),
+            timeoutMs: options.timeoutMs - (Date.now() - startedAt),
+            maxResultBytes: options.resultFileBytes,
+          },
+          options.openclawDir,
+        );
+        const reconciled = parseDecision(
+          {
+            ...result.decision,
+            decision: "keep_open",
+            closeReason: "none",
+            reviewFindings: result.findings,
+            overallCorrectness: result.findings.length ? "patch is incorrect" : "patch is correct",
+          },
+          options.item,
+        );
+        const decision = combineHanselmanAssessment(baseline, reconciled);
+        const cell = (text: string) =>
+          neutralizeOwnedSectionSpoofing(text.replace(/[\r\n\u2028\u2029]/g, " ")).replaceAll(
+            "|",
+            "\\|",
+          );
+        const modelCell = (finding: HanselmanFinding | undefined) =>
+          finding
+            ? cell(
+                `${finding.severity}; ${finding.file}:${finding.lineStart}-${finding.lineEnd}; suggested fix: ${finding.suggestedFix}`,
+              )
+            : "not flagged";
+        const rows = result.adjudications.map((row) => {
+          const opus = row.opus === null ? undefined : result.reviews[0]?.findings[row.opus];
+          const astra = row.astra === null ? undefined : result.reviews[1]?.findings[row.astra];
+          const finding = opus ?? astra!;
+          return `| ${cell(finding.title)} (${cell(finding.file)}:${finding.lineStart}-${finding.lineEnd}) | ${modelCell(opus)} | ${modelCell(astra)} | ${opus && astra ? "HIGH" : "LOW"}${row.disputed ? " (disputed)" : ""} | ${row.disposition} | ${row.fixConfidence}% | ${cell(row.evidence)} Suggested fix: ${cell(row.suggestedFix)} |`;
+        });
+        decision.solutionAssessment +=
+          "\n\n" +
+          [
+            "",
+            "### Hanselman dual-model review",
+            "The normal ClawSweeper assessment ran first. Its findings, confidence, requested actions and proof requirements remain in force; this stage adds source-verified analysis and next steps.",
+            `Skill revision: ${result.provenance.skillRevision}. Head: ${headSha}. Base: ${baseSha}.`,
+            ...result.provenance.models.map(
+              (model) =>
+                `${model.role}: ${model.model}, reasoning=${model.reasoningEffort}, context=${model.contextTier}.`,
+            ),
+            `Scope: ${result.reviews.map((review) => cell(review.scope)).join("; ")}`,
+            "| Finding and source | Opus severity, source and fix | Astra severity, source and fix | Consensus | Disposition | Fix confidence | Evidence and suggested fix |",
+            "| --- | --- | --- | --- | --- | --- | --- |",
+            ...rows,
+            ...(rows.length ? [] : ["Both independent reviewers returned no findings."]),
+            "Source review does not replace required CI or current-head Windows, UI, MCP or Gateway proof.",
+          ].join("\n");
+        const dirtyAfter = openclawDirtyStatus(options.openclawDir);
+        if (dirtyAfter) throw new Error("Hanselman incomplete: checkout changed during review.");
+        return { ...decision, localCheckoutAccess: "verified", hanselmanReview: result.provenance };
+      } catch (error) {
+        if (error instanceof AgentInputScanError) throw error;
+        throw new HanselmanProcessError(
+          error instanceof Error ? error.message : "Hanselman incomplete: hosted runner failed.",
+          error instanceof HanselmanProcessError
+            ? error.provenance
+            : incompleteHanselmanProvenance(headSha, baseSha),
+          baseline,
+        );
+      }
+    }
     // Codex owns transport recovery; the durable queue owns fresh review attempts.
     const codexConfig = ['approval_policy="never"'];
     if (options.sandboxMode === "clawsweeper-review") {
@@ -926,7 +1021,7 @@ ${extra}
       });
     }
     const processStartedAt = Date.now();
-    const result = runAgentProcess({
+    const result = runReviewProcess({
       scanSource,
       ...(options.promptFileBytes === 0 ? {} : { diagnosticPromptPath: promptPath }),
       label: `review-${options.item.number}-attempt-1`,
@@ -955,7 +1050,8 @@ ${extra}
         ? {}
         : { outputFileBytes: options.streamFileBytes }),
       outputLastMessageBytes: options.resultFileBytes,
-      timeoutMs: remainingMs,
+      timeoutMs:
+        options.strategy === "hanselman" ? Math.max(1, Math.floor(remainingMs / 3)) : remainingMs,
       decisionRepair: {
         item: { repo: options.item.repo, number: options.item.number, kind: options.item.kind },
       },
@@ -995,6 +1091,7 @@ ${extra}
       failureDetail = `Codex review failed for #${options.item.number}: ${redactInternalCodexModel(result.error.message)}`;
     }
     const hasOutput = existsSync(outputPath);
+    let parsedDecision: Decision | undefined;
     if (!result.error && hasOutput) {
       try {
         const decision = parseDecision(
@@ -1015,7 +1112,7 @@ ${extra}
             `[review] ${new Date().toISOString()} decision-repair-turn #${options.item.number} ok`,
           );
         }
-        return {
+        parsedDecision = {
           ...verifyLikelyOwnerHistory(decision, {
             checkoutDir: options.openclawDir,
             reviewedCommitShas: [
@@ -1038,6 +1135,7 @@ ${extra}
           ? `Codex review did not produce output for #${options.item.number}: Codex exited successfully but did not write ${outputPath}.\n${stdout || "No stdout."}`
           : `Codex review failed for #${options.item.number} with exit ${result.status ?? "unknown"}.`;
     }
+    if (parsedDecision) return complementAssessment(parsedDecision);
     if (result.decisionRepairError) {
       console.error(
         `[review] ${new Date().toISOString()} decision-repair-turn #${options.item.number} failed`,

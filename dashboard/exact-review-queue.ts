@@ -5,6 +5,8 @@ import {
   type ExactReviewPublicationReasonCode,
 } from "./exact-review-publication-reasons.ts";
 import { stableJson } from "../src/stable-json.ts";
+import { assertReviewStrategyTarget, hanselmanCommand } from "../src/review-strategy.ts";
+import { normalizeClawSweeperCommandLine } from "../src/repair/comment-command-text.ts";
 import { CLAWSWEEPER_APP_BOT_LOGINS } from "../src/clawsweeper-bot-identity.ts";
 import { exactReviewSourceRevisionMaterial } from "./exact-review-source-revision.ts";
 import { requiresVerifiedMaintainerReviewRequest } from "./maintainer-author.ts";
@@ -14445,6 +14447,62 @@ export class ExactReviewQueue {
       ...intake.decision,
       sourceCommentVerified: true,
     };
+    const commandLine = normalizeClawSweeperCommandLine(sourceComment.body);
+    if (commandLine && hanselmanCommand(commandLine.commandText)) {
+      try {
+        assertReviewStrategyTarget("hanselman", decision.targetRepo, decision.itemKind);
+      } catch {
+        this.commandIntakeStore.finish(
+          intake.commandVersionId,
+          "rejected",
+          Date.now(),
+          "unsupported_review_strategy_target",
+        );
+        return null;
+      }
+      const author = String(objectValue(sourceComment.user).login || "");
+      if (!/^[A-Za-z0-9-]+$/.test(author)) {
+        this.commandIntakeStore.finish(
+          intake.commandVersionId,
+          "rejected",
+          Date.now(),
+          "review_strategy_unauthorized",
+        );
+        return null;
+      }
+      let permission: Record<string, unknown>;
+      try {
+        permission = objectValue(
+          await githubTokenJson({
+            env: this.env,
+            token: await token,
+            path: `/repos/${decision.targetRepo}/collaborators/${author}/permission`,
+            method: "GET",
+            body: undefined,
+            errorLabel: "Hanselman review requester permission",
+          }),
+        );
+      } catch (error) {
+        if (!(error instanceof GitHubRequestError && error.status === 404)) throw error;
+        this.commandIntakeStore.finish(
+          intake.commandVersionId,
+          "rejected",
+          Date.now(),
+          "review_strategy_unauthorized",
+        );
+        return null;
+      }
+      if (!["admin", "maintain", "write"].includes(String(permission.permission))) {
+        this.commandIntakeStore.finish(
+          intake.commandVersionId,
+          "rejected",
+          Date.now(),
+          "review_strategy_unauthorized",
+        );
+        return null;
+      }
+      decision.reviewStrategy = "hanselman";
+    }
     const itemPath = decision.itemKind === "pull_request" ? "pulls" : "issues";
     const item = objectValue(
       await githubTokenJson({

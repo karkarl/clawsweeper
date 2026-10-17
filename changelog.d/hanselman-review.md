@@ -1,0 +1,1 @@
+- Automatically complement each admitted Windows Node PR review with independent Hanselman Opus/Astra reviews informed by ClawSweeper's assessment, preserving requested actions, proof gaps and separate confidence measures in one combined result; own the shared MIT-licensed skill in ClawSweeper.

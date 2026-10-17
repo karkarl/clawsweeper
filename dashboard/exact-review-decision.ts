@@ -1,5 +1,11 @@
 import { stableJson } from "../src/stable-json.ts";
 import {
+  assertReviewStrategyTarget,
+  effectiveReviewStrategy,
+  reviewStrategy,
+  type ReviewStrategy,
+} from "../src/review-strategy.ts";
+import {
   decisionPublicationPolicy,
   MANUAL_REVIEW_SOURCE_ACTION,
   type PublicationPolicy,
@@ -54,6 +60,7 @@ export type ExactReviewBaseDecision = {
   statusCommentId?: number;
   reviewAcknowledgementCommentId?: number;
   additionalPrompt?: string;
+  reviewStrategy?: ReviewStrategy;
   sourceCommentId?: number;
   sourceCommentUpdatedAt?: string;
   commandBodyDigest?: string;
@@ -160,7 +167,13 @@ export function exactReviewDecisionFrom(value: unknown): ExactReviewDecision | n
   } else if (base.sourceAction === EXACT_REVIEW_ARTIFACT_PUBLISH_SOURCE_ACTION) {
     return null;
   }
-  return { ...base, ...(publication ? { publication } : {}) };
+  return {
+    ...base,
+    ...(!publication && effectiveReviewStrategy(base.targetRepo, base.itemKind) === "hanselman"
+      ? { reviewStrategy: "hanselman" as const }
+      : {}),
+    ...(publication ? { publication } : {}),
+  };
 }
 
 export function exactReviewDecisionWithoutSourceAuthority(decision: ExactReviewDecision) {
@@ -397,6 +410,13 @@ export function exactReviewBaseDecisionFrom(value: unknown): ExactReviewBaseDeci
   const commandOrigin = hasCommandOrigin ? String(decision.commandOrigin || "") : undefined;
   const hasSourceCommentVerified = Object.hasOwn(decision, "sourceCommentVerified");
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(targetRepo)) return null;
+  let strategy: ReviewStrategy;
+  try {
+    strategy = reviewStrategy(decision.reviewStrategy);
+    assertReviewStrategyTarget(strategy, targetRepo, itemKind);
+  } catch {
+    return null;
+  }
   if (!/^[A-Za-z0-9_./-]+$/.test(targetBranch)) return null;
   if (!Number.isInteger(itemNumber) || itemNumber <= 0) return null;
   if (itemKind !== "issue" && itemKind !== "pull_request") return null;
@@ -508,6 +528,7 @@ export function exactReviewBaseDecisionFrom(value: unknown): ExactReviewBaseDeci
     ...(statusCommentId === undefined ? {} : { statusCommentId }),
     ...(reviewAcknowledgementCommentId === undefined ? {} : { reviewAcknowledgementCommentId }),
     ...(typeof additionalPrompt === "string" ? { additionalPrompt } : {}),
+    ...(strategy === "hanselman" ? { reviewStrategy: strategy } : {}),
     ...(sourceCommentId === undefined ? {} : { sourceCommentId }),
     ...(sourceCommentUpdatedAt === undefined ? {} : { sourceCommentUpdatedAt }),
     ...(commandBodyDigest === undefined ? {} : { commandBodyDigest }),
@@ -557,6 +578,7 @@ export async function exactReviewEditedSemanticInput(
         ? decision.statusCommentId
         : null,
       additional_prompt: decision.additionalPrompt || null,
+      ...(decision.reviewStrategy ? { review_strategy: decision.reviewStrategy } : {}),
     },
   });
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(tuple));
@@ -760,6 +782,8 @@ export function mergePendingExactReviewDecision(
   const commandMarkerChanged =
     Object.hasOwn(next, "commandStatusMarker") &&
     next.commandStatusMarker !== current.commandStatusMarker;
+  if (effectiveReviewStrategy(merged.targetRepo, merged.itemKind) === "hanselman")
+    merged.reviewStrategy = "hanselman";
   if (commandMarkerChanged && !Object.hasOwn(next, "statusCommentId")) {
     delete merged.statusCommentId;
   }
@@ -792,6 +816,8 @@ const EXACT_REVIEW_COMMAND_FIELDS = [
 export function exactReviewDecisionWithoutCommand(decision: ExactReviewDecision) {
   const rest = { ...decision };
   for (const field of EXACT_REVIEW_COMMAND_FIELDS) delete rest[field];
+  if (effectiveReviewStrategy(rest.targetRepo, rest.itemKind) === "hanselman")
+    rest.reviewStrategy = "hanselman";
   return rest;
 }
 

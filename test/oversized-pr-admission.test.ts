@@ -19,21 +19,31 @@ import { repositoryProfileFor } from "../dist/repository-profiles.js";
 import { reviewActionForDecision } from "../dist/clawsweeper-report-actions.js";
 import { item } from "./helpers.ts";
 
-for (const source of [
-  "exact-event",
-  "scheduled_hot_intake",
-  "scheduled_normal_backfill",
-  "shard",
-  "metadata-none",
-  "metadata-none-json",
-  "metadata-summary",
-  "metadata-debug",
-  "metadata-overflow",
+for (const { source, repo } of [
+  ...[
+    "exact-event",
+    "scheduled_hot_intake",
+    "scheduled_normal_backfill",
+    "shard",
+    "metadata-none",
+    "metadata-none-json",
+    "metadata-summary",
+    "metadata-debug",
+    "metadata-overflow",
+  ].map((source) => ({ source, repo: "openclaw/openclaw" })),
+  { source: "exact-event", repo: "openclaw/openclaw-windows-node" },
+  { source: "metadata-debug", repo: "openclaw/openclaw-windows-node" },
+  { source: "local-issue", repo: "openclaw/openclaw-windows-node" },
 ]) {
-  for (const total of source.startsWith("metadata-") ? [166686] : [166686, 49999]) {
-    test(`reviewCommand ${source}: ${total} lines is checked before cache, lease, hydration and model`, () => {
+  for (const total of source === "local-issue"
+    ? [49999]
+    : source.startsWith("metadata-")
+      ? [166686]
+      : [166686, 49999]) {
+    test(`reviewCommand ${repo} ${source}: ${total} lines is checked before cache, lease, hydration and model`, () => {
       const root = mkdtempSync(join(tmpdir(), "pr-admission-"));
       const metadataOnly = source.startsWith("metadata-");
+      const localIssue = source === "local-issue";
       const overflow = source === "metadata-overflow";
       const json = source === "metadata-none-json";
       const retention =
@@ -41,8 +51,19 @@ for (const source of [
       const artifactDir = join(root, "output");
       const scratch = join(root, "tmp");
       mkdirSync(scratch);
-      const previousTmpdir = process.env.TMPDIR;
-      process.env.TMPDIR = scratch;
+      const previousEnv = process.env;
+      process.env = {
+        ...previousEnv,
+        TMPDIR: scratch,
+        ...(repo === "openclaw/openclaw-windows-node"
+          ? {
+              CLAWSWEEPER_REVIEW_STRATEGY: localIssue ? "single" : "hanselman",
+              EXACT_REVIEW_ITEM_KEY: `${repo}#123`,
+              EXACT_REVIEW_ITEM_KIND: localIssue ? "issue" : "pull_request",
+              EXACT_REVIEW_LEASE_ID: "fixture-queue-lease",
+            }
+          : {}),
+      };
       const calls = {
         metadata: 0,
         hydration: 0,
@@ -64,7 +85,11 @@ for (const source of [
       const previousLog = console.log;
       let observedReportPath = "";
       let renderedReport = "";
-      const candidate = item({ kind: "pull_request", authorAssociation: "OWNER" });
+      const candidate = item({
+        repo,
+        kind: localIssue ? "issue" : "pull_request",
+        authorAssociation: "OWNER",
+      });
       const rawPull = {
         number: candidate.number,
         title: candidate.title,
@@ -82,7 +107,7 @@ for (const source of [
       };
       const admissionPath = join(root, "admission.json");
       if (metadataOnly)
-        writeFileSync(admissionPath, JSON.stringify({ repo: "OpenClaw/OpenClaw", pull: rawPull }));
+        writeFileSync(admissionPath, JSON.stringify({ repo: repo.toUpperCase(), pull: rawPull }));
       const stop = new Error("CONTROL_REACHED_NORMAL_HYDRATION");
       const base = {
         activeReviewMutationRunner: null,
@@ -154,7 +179,7 @@ for (const source of [
         reviewActionForDecision,
         collectItemContext: (_item: unknown, options: any) => {
           calls.hydration++;
-          assert.equal(options.pullRequestPayload, rawPull);
+          assert.equal(options.pullRequestPayload, localIssue ? undefined : rawPull);
           throw stop;
         },
         runReviewCheckoutInspection: () => {
@@ -178,6 +203,7 @@ for (const source of [
           return null;
         },
         bulkFilerPolicyInvalidatesCachedReview: () => false,
+        isBulkFilerExemptAuthorAssociation: () => true,
         localExactReviewHistoryPath: () => null,
       };
       const dependencies = new Proxy(base, {
@@ -200,12 +226,20 @@ for (const source of [
           ...(retention === "none" ? [] : ["--artifact-dir", artifactDir]),
           "--skip-start-comment",
           ...(metadataOnly ? ["--local-only", "--pr-admission-file", admissionPath] : []),
+          ...(localIssue ? ["--local-only"] : []),
           ...(total > 50000 && !metadataOnly
             ? ["--review-lease-owner", "reserved-owner", "--review-lease-comment-id", "5602217053"]
             : []),
           ...(source === "shard"
             ? ["--shard-count", "4", "--shard-index", "2"]
-            : ["--item-number", "123", "--review-source-action", source]),
+            : [
+                repo === "openclaw/openclaw-windows-node" && source === "exact-event"
+                  ? "--item-numbers"
+                  : "--item-number",
+                "123",
+                "--review-source-action",
+                source,
+              ]),
         ]);
         if (metadataOnly) {
           assert.throws(
@@ -245,7 +279,10 @@ for (const source of [
           if (retention !== "none") {
             const report = JSON.parse(readFileSync(observedReportPath, "utf8"));
             assert.equal(report.decision.closeReason, "oversized_pull_request");
-            assert.equal(report.action.actionTaken, "proposed_close");
+            assert.equal(
+              report.action.actionTaken,
+              repo === "openclaw/openclaw" ? "proposed_close" : "skipped_invalid_decision",
+            );
             assert.equal(report.decision.oversizedPullRequest.additions, total);
           }
           if (retention === "summary") assert.deepEqual(readdirSync(artifactDir), ["123.md"]);
@@ -268,7 +305,7 @@ for (const source of [
           );
         }
         assert.deepEqual(calls, {
-          metadata: metadataOnly ? 0 : 1,
+          metadata: metadataOnly || localIssue ? 0 : 1,
           hydration: total > 50000 ? 0 : 1,
           scanner: 0,
           codex: 0,
@@ -280,8 +317,7 @@ for (const source of [
         assert.deepEqual(readdirSync(scratch), [], "all private review scratch must be removed");
       } finally {
         console.log = previousLog;
-        if (previousTmpdir === undefined) delete process.env.TMPDIR;
-        else process.env.TMPDIR = previousTmpdir;
+        process.env = previousEnv;
         rmSync(root, { recursive: true, force: true });
       }
     });

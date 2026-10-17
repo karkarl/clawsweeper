@@ -1,4 +1,6 @@
 import { readPrAdmissionInput } from "./clawsweeper-pr-admission-input.js";
+import { assertReviewStrategyTarget, reviewStrategy, HANSELMAN_TARGET } from "./review-strategy.js";
+import { hanselmanPolicyHash } from "./hanselman-contract.js";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { boolArg, itemNumbersArg, numberArg, stringArg } from "./clawsweeper-args.js";
@@ -127,11 +129,44 @@ export function prepareReviewCommand(args: Args, dependencies: PrepareReviewDepe
     const itemNumbers = hasItemNumbersInput
       ? itemNumbersArg(args.item_numbers, undefined)
       : undefined;
+    const exactItemNumber = itemNumbers
+      ? itemNumber === undefined && itemNumbers.length === 1
+        ? itemNumbers[0]
+        : undefined
+      : itemNumber;
     if (localRange && (itemNumber !== undefined || itemNumbers !== undefined)) {
       throw new UserFacingCommandError(
         "--item-number / --item-numbers cannot be combined with --local-range (local-range reviews " +
           "the local git range and never fetches a GitHub item).",
       );
+    }
+    let strategy = reviewStrategy(args.review_strategy ?? process.env.CLAWSWEEPER_REVIEW_STRATEGY);
+    if (
+      !localRange &&
+      exactItemNumber !== undefined &&
+      targetRepo().toLowerCase() === HANSELMAN_TARGET &&
+      !localOnly &&
+      process.env.EXACT_REVIEW_ITEM_KIND === "pull_request"
+    )
+      strategy = "hanselman";
+    if (strategy === "hanselman") {
+      assertReviewStrategyTarget(strategy, targetRepo(), "pull_request");
+      if (localRange || exactItemNumber === undefined) {
+        throw new UserFacingCommandError(
+          "Hanselman review requires one exact PR, not a sweep or metadata review.",
+        );
+      }
+      if (
+        !localOnly &&
+        (process.env.EXACT_REVIEW_ITEM_KEY?.toLowerCase() !==
+          `${targetRepo()}#${exactItemNumber}`.toLowerCase() ||
+          process.env.EXACT_REVIEW_ITEM_KIND !== "pull_request" ||
+          !process.env.EXACT_REVIEW_LEASE_ID)
+      ) {
+        throw new UserFacingCommandError(
+          "Hosted Hanselman review requires an admitted Windows Node PR and exact-review queue lease.",
+        );
+      }
     }
     const localExactItem = localExactReviewItem(localOnly, itemNumber, itemNumbers);
     const humanLocalReview = localExactItem && !verbose;
@@ -159,6 +194,7 @@ export function prepareReviewCommand(args: Args, dependencies: PrepareReviewDepe
         )
       : undefined;
     const metadataOnly = prAdmissionInput?.admission.admitted === false;
+    if (metadataOnly) strategy = "single";
     const checkout = metadataOnly
       ? { openclawDir: checkoutArtifactDir, gitTargetBranch: undefined }
       : localRange
@@ -286,11 +322,6 @@ export function prepareReviewCommand(args: Args, dependencies: PrepareReviewDepe
       );
     }
     const forcedLoginMethod = reviewCodexForcedLoginMethod(args);
-    const exactItemNumber = itemNumbers
-      ? itemNumber === undefined && itemNumbers.length === 1
-        ? itemNumbers[0]
-        : undefined
-      : itemNumber;
     const itemKind = process.env.EXACT_REVIEW_ITEM_KIND;
     // No hydrated item exists yet. Only the matching workflow claim can identify this failure.
     const exactReviewIdentity =
@@ -351,7 +382,11 @@ export function prepareReviewCommand(args: Args, dependencies: PrepareReviewDepe
       }
       throw error;
     }
-    const reviewPolicy = reviewPolicyHash({ model, sandboxMode });
+    const singleReviewPolicy = reviewPolicyHash({ model, sandboxMode });
+    const reviewPolicy =
+      strategy === "hanselman" || targetRepo().toLowerCase() === HANSELMAN_TARGET
+        ? hanselmanPolicyHash(singleReviewPolicy)
+        : singleReviewPolicy;
     const explicitDispatch = isExplicitReviewDispatch(
       args,
       itemNumber !== undefined || itemNumbers !== undefined,
@@ -372,6 +407,7 @@ export function prepareReviewCommand(args: Args, dependencies: PrepareReviewDepe
       batchSize,
       maxPages,
       model,
+      strategy,
       sandboxMode,
       timeoutMs,
       expectedSourceRevision,

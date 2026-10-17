@@ -8,8 +8,8 @@ const OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const MAX_FILES = 80;
 const MAX_PATCH_CHARS = 24_000;
 const MAX_COMMIT_PARENTS = 8;
-// Git for Windows accepts the DOS device spelling but rejects Node's `\\\\.\\nul`
-// spelling when it is supplied through GIT_CONFIG_GLOBAL.
+// Use the DOS device for hooks/grafts, but an empty explicit global-config path
+// on Windows: Git rejects both Windows null-device spellings as config files.
 const gitNullDevice = process.platform === "win32" ? "NUL" : devNull;
 
 type MergeBase =
@@ -143,7 +143,7 @@ export function readReviewGit(
                 }
               : {
                   GIT_CONFIG_NOSYSTEM: "1",
-                  GIT_CONFIG_GLOBAL: gitNullDevice,
+                  GIT_CONFIG_GLOBAL: process.platform === "win32" ? "" : gitNullDevice,
                   GIT_ATTR_NOSYSTEM: "1",
                 }),
             GIT_NO_LAZY_FETCH: "1",

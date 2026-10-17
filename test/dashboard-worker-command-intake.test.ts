@@ -824,18 +824,25 @@ function commandVersionId() {
   return `command-${COMMAND_COMMENT_ID}-${Date.parse(COMMAND_UPDATED_AT).toString(36)}-${bodyDigest}`;
 }
 
-function intakeFixture(options: { updatedAt: string; body: string; targetRepo?: string }) {
+function intakeFixture(options: {
+  updatedAt: string;
+  body: string;
+  targetRepo?: string;
+  itemKind?: "issue" | "pull_request";
+  candidateHeadSha?: string;
+}) {
   return directReReviewIntake({
     targetRepo: options.targetRepo ?? "openclaw/openclaw",
     targetBranch: "main",
     itemNumber: ITEM_NUMBER,
-    itemKind: "pull_request",
+    itemKind: options.itemKind ?? "pull_request",
     installationId: 123,
     sourceCommentId: COMMAND_COMMENT_ID,
     sourceCommentUpdatedAt: options.updatedAt,
     commandBodyDigest: createHash("sha256").update(options.body).digest("hex"),
     commandOrigin: "hosted_webhook",
     additionalPrompt: "",
+    ...(options.candidateHeadSha ? { candidateHeadSha: options.candidateHeadSha } : {}),
   });
 }
 
@@ -876,7 +883,10 @@ function receiptOutcome(storage: MemoryDurableStorage, commandVersion: string) {
   )[0]?.outcome;
 }
 
-async function startGithubLoopback() {
+async function startGithubLoopback(
+  options: { repo?: string; body?: string; permission?: string } = {},
+) {
+  const repo = options.repo ?? "openclaw/openclaw";
   const acknowledgements: Array<{
     id: number;
     body: string;
@@ -892,11 +902,13 @@ async function startGithubLoopback() {
     sourceCommentReads: 0,
     sourceCommentUpdatedAt: COMMAND_UPDATED_AT,
     reactions: 0,
+    permissionReads: 0,
+    headSha: HEAD_SHA,
   };
   const server = http.createServer(async (request, response) => {
     const url = new URL(request.url || "/", "http://127.0.0.1");
     const body = await readJson(request);
-    if (url.pathname === `/repos/openclaw/openclaw/issues/comments/${COMMAND_COMMENT_ID}`) {
+    if (url.pathname === `/repos/${repo}/issues/comments/${COMMAND_COMMENT_ID}`) {
       state.sourceCommentReads += 1;
       if (state.throttleSourceComment) {
         response.writeHead(403, {
@@ -909,28 +921,35 @@ async function startGithubLoopback() {
       }
       return sendJson(response, 200, {
         id: COMMAND_COMMENT_ID,
-        body: COMMAND_BODY,
+        body: options.body ?? COMMAND_BODY,
         updated_at: state.sourceCommentUpdatedAt,
-        issue_url: `https://api.github.com/repos/openclaw/openclaw/issues/${ITEM_NUMBER}`,
+        issue_url: `https://api.github.com/repos/${repo}/issues/${ITEM_NUMBER}`,
+        user: { login: "contributor" },
       });
     }
-    if (url.pathname === `/repos/openclaw/openclaw/pulls/${ITEM_NUMBER}`) {
+    if (url.pathname === `/repos/${repo}/collaborators/contributor/permission`) {
+      state.permissionReads += 1;
+      if (options.permission === "missing")
+        return sendJson(response, 404, { message: "Not Found" });
+      return sendJson(response, 200, { permission: options.permission ?? "read" });
+    }
+    if (url.pathname === `/repos/${repo}/pulls/${ITEM_NUMBER}`) {
       return sendJson(response, 200, {
         ...REVIEW_SOURCE,
         state: "open",
         updated_at: COMMAND_UPDATED_AT,
-        head: { sha: HEAD_SHA },
+        head: { sha: state.headSha },
       });
     }
-    if (url.pathname === "/repos/openclaw/openclaw/installation") {
+    if (url.pathname === `/repos/${repo}/installation`) {
       return sendJson(response, 200, { id: 123 });
     }
     if (url.pathname === "/repos/openclaw/clawsweeper/installation") {
       return sendJson(response, 200, { id: 777 });
     }
-    if (url.pathname === "/repos/openclaw/openclaw") {
+    if (url.pathname === `/repos/${repo}`) {
       return sendJson(response, 200, {
-        full_name: "openclaw/openclaw",
+        full_name: repo,
         private: false,
         visibility: "public",
       });
@@ -938,7 +957,7 @@ async function startGithubLoopback() {
     if (/^\/app\/installations\/(?:123|777)\/access_tokens$/.test(url.pathname)) {
       return sendJson(response, 201, { token: "loopback-token" });
     }
-    if (url.pathname === `/repos/openclaw/openclaw/issues/${ITEM_NUMBER}/comments`) {
+    if (url.pathname === `/repos/${repo}/issues/${ITEM_NUMBER}/comments`) {
       if (request.method === "GET") {
         const page = Math.max(1, Number(url.searchParams.get("page") || 1));
         const perPage = Math.max(1, Number(url.searchParams.get("per_page") || 100));
@@ -953,16 +972,17 @@ async function startGithubLoopback() {
           id: nextCommentId++,
           body: String(body.body || ""),
           created_at: new Date().toISOString(),
-          issue_url: `https://api.github.com/repos/openclaw/openclaw/issues/${ITEM_NUMBER}`,
+          issue_url: `https://api.github.com/repos/${repo}/issues/${ITEM_NUMBER}`,
           user: { login: "clawsweeper[bot]" },
         };
         acknowledgements.push(comment);
         return sendJson(response, 201, comment);
       }
     }
-    const acknowledgement = url.pathname.match(
-      /^\/repos\/openclaw\/openclaw\/issues\/comments\/(\d+)$/,
-    );
+    const commentPrefix = `/repos/${repo}/issues/comments/`;
+    const acknowledgement = url.pathname.startsWith(commentPrefix)
+      ? url.pathname.slice(commentPrefix.length).match(/^(\d+)$/)
+      : null;
     if (acknowledgement) {
       const id = Number(acknowledgement[1]);
       const index = acknowledgements.findIndex((comment) => comment.id === id);
@@ -976,9 +996,7 @@ async function startGithubLoopback() {
         return;
       }
     }
-    if (
-      url.pathname === `/repos/openclaw/openclaw/issues/comments/${COMMAND_COMMENT_ID}/reactions`
-    ) {
+    if (url.pathname === `/repos/${repo}/issues/comments/${COMMAND_COMMENT_ID}/reactions`) {
       state.reactions += 1;
       return sendJson(response, 201, { id: state.reactions, content: "eyes" });
     }
@@ -1005,7 +1023,7 @@ async function startGithubLoopback() {
         id: comment.id,
         body: comment.body,
         created_at: new Date(comment.id).toISOString(),
-        issue_url: `https://api.github.com/repos/openclaw/openclaw/issues/${ITEM_NUMBER}`,
+        issue_url: `https://api.github.com/repos/${repo}/issues/${ITEM_NUMBER}`,
         user: { login: comment.login },
       });
     },
@@ -1034,6 +1052,7 @@ test("command clients cannot provide server-derived review source identity", () 
     ["sourceContentRevision", "a".repeat(64)],
     ["sourceBaseSha", "b".repeat(40)],
     ["sourceIsDraft", false],
+    ["reviewStrategy", "hanselman"],
   ]) {
     assert.equal(
       validateDirectReReviewIntake({
@@ -1042,5 +1061,121 @@ test("command clients cannot provide server-derived review source identity", () 
       }),
       null,
     );
+  }
+});
+
+test("Hanselman intake derives strategy from fresh comments, permissions and exact source", async (t) => {
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const windowsRepo = "openclaw/openclaw-windows-node";
+  for (const scenario of [
+    {
+      name: "authorized and duplicate",
+      repo: windowsRepo,
+      permission: "write",
+      expected: "completed",
+    },
+    {
+      name: "PR author alone is unauthorized",
+      repo: windowsRepo,
+      permission: "read",
+      expected: "rejected",
+    },
+    { name: "non-collaborator", repo: windowsRepo, permission: "missing", expected: "rejected" },
+    {
+      name: "other repository",
+      repo: "openclaw/openclaw",
+      permission: "admin",
+      expected: "rejected",
+    },
+    {
+      name: "ordinary issue",
+      repo: windowsRepo,
+      permission: "admin",
+      itemKind: "issue" as const,
+      expected: "rejected",
+    },
+    {
+      name: "changed head",
+      repo: windowsRepo,
+      permission: "admin",
+      changedHead: true,
+      expected: "rejected",
+    },
+    {
+      name: "superseded comment",
+      repo: windowsRepo,
+      permission: "maintain",
+      changedComment: true,
+      expected: "rejected",
+    },
+    {
+      name: "ordinary review authorization unchanged; complementary strategy selected",
+      repo: windowsRepo,
+      permission: "read",
+      ordinary: true,
+      expected: "completed",
+    },
+  ]) {
+    await t.test(scenario.name, async (t) => {
+      const body = scenario.ordinary ? "/review" : "/review hanselman";
+      const fixture = await startGithubLoopback({
+        repo: scenario.repo,
+        body,
+        permission: scenario.permission,
+      });
+      t.after(() => fixture.close());
+      const storage = new MemoryDurableStorage();
+      const queue = new ExactReviewQueue(
+        { storage },
+        {
+          GITHUB_API_URL: fixture.origin,
+          CLAWSWEEPER_APP_CLIENT_ID: "Iv23hanselman-intake-test",
+          CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+          EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0",
+          STATUS_STORE: new MemoryKv(),
+        },
+      );
+      const intake = intakeFixture({
+        updatedAt: COMMAND_UPDATED_AT,
+        body,
+        targetRepo: scenario.repo,
+        itemKind: scenario.itemKind,
+        candidateHeadSha: HEAD_SHA,
+      });
+      const request = () =>
+        new Request("https://clawsweeper-exact-review-queue/command-intake", {
+          method: "POST",
+          body: JSON.stringify(intake),
+        });
+      assert.equal((await queue.fetch(request())).status, 202);
+      if (scenario.changedHead) fixture.headSha = "c".repeat(40);
+      if (scenario.changedComment) fixture.sourceCommentUpdatedAt = "2026-08-12T16:25:27Z";
+      await queue.alarm();
+      assert.equal(receiptOutcome(storage, intake.commandVersionId), scenario.expected);
+      const state = (await storage.get("exact-review-queue")) as
+        | {
+            items?: Record<
+              string,
+              { decision: { reviewStrategy?: string; sourceHeadSha?: string } }
+            >;
+          }
+        | undefined;
+      const item = state?.items?.[`${scenario.repo}#${ITEM_NUMBER}`];
+      if (scenario.expected === "completed") {
+        assert.ok(item);
+        assert.equal(item.decision.reviewStrategy, "hanselman");
+        assert.equal(item.decision.sourceHeadSha, HEAD_SHA);
+        const duplicate = await queue.fetch(request());
+        assert.equal((await duplicate.json()).deduped, true);
+        assert.equal(fixture.sourceCommentReads, 1);
+        assert.equal(fixture.permissionReads, scenario.ordinary ? 0 : 1);
+      } else {
+        assert.equal(item, undefined);
+      }
+    });
   }
 });

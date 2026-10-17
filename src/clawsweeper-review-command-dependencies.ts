@@ -296,6 +296,7 @@ export interface CreateReviewCommandWorkflowDependencies {
     timeoutMs: number;
   }) => CodexProcessResult;
   runCodex: (options: {
+    strategy?: import("./review-strategy.js").ReviewStrategy;
     item: Item;
     context: ItemContext;
     git: GitInfo;

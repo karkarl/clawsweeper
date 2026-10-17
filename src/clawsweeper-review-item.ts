@@ -1,4 +1,12 @@
 import { join } from "node:path";
+import {
+  assertReviewStrategyTarget,
+  effectiveReviewStrategy,
+  type ReviewStrategy,
+} from "./review-strategy.js";
+import { incompleteHanselmanProvenance } from "./hanselman-contract.js";
+import { HanselmanProcessError } from "./hanselman-process.js";
+import { asRecord, stringOrEmpty } from "./value-coerce.js";
 import { writeFileSync } from "node:fs";
 import { UserFacingCommandError } from "./command.js";
 import { reviewStatusForDecision } from "./clawsweeper-report-document.js";
@@ -40,6 +48,7 @@ export function runPreparedReviewItem(
     context: ItemContext;
     git: GitInfo;
     model: string;
+    strategy?: ReviewStrategy;
     sandboxMode: string;
     localOnly: boolean;
     localRange: boolean;
@@ -106,6 +115,10 @@ export function runPreparedReviewItem(
     displayDurationMs,
   } = dependencies;
   const reviewEnv = reviewEnvironment(sandboxMode, localOnly);
+  const strategy = localRange
+    ? (options.strategy ?? "single")
+    : effectiveReviewStrategy(item.repo, item.kind, options.strategy);
+  assertReviewStrategyTarget(strategy, item.repo, item.kind);
   // The review sandbox cannot fetch old blobs: make the changed files'
   // history local first, so host blame and the reviewer both read it.
   const historyCoverage =
@@ -175,6 +188,7 @@ export function runPreparedReviewItem(
           context,
           git,
           model,
+          strategy,
           openclawDir: reviewOpenclawDir,
           reviewTreeRoot: reviewTreesDir,
           reasoningEffort: itemCodexProfile.reasoningEffort,
@@ -197,19 +211,55 @@ export function runPreparedReviewItem(
     );
   } catch (error) {
     if (error instanceof AgentInputScanError) throw error;
-    codexFailureRetryable = codexReviewFailureRetryable(error);
+    codexFailureRetryable =
+      !(error instanceof HanselmanProcessError) && codexReviewFailureRetryable(error);
     const failure = codexReviewFailure(error);
     decision = failure.decision;
+    if (strategy === "hanselman") {
+      const baseline =
+        error instanceof HanselmanProcessError ? error.baselineAssessment : undefined;
+      if (baseline) decision = { ...baseline, decision: "keep_open", closeReason: "none" };
+      decision.summary = `${baseline ? `${baseline.summary}\n\n` : ""}Combined review incomplete. No reconciled Hanselman consensus was produced.`;
+      decision.localCheckoutAccess = "unverified";
+      decision.codexTerminalFailure = !codexFailureRetryable;
+      const pull = asRecord(context.pullRequest);
+      decision.hanselmanReview =
+        error instanceof HanselmanProcessError
+          ? error.provenance
+          : incompleteHanselmanProvenance(
+              stringOrEmpty(asRecord(pull.head).sha),
+              stringOrEmpty(asRecord(pull.base).sha),
+            );
+      decision.solutionAssessment = `${decision.solutionAssessment}\n\n${error instanceof Error && error.message.startsWith("Hanselman incomplete:") ? error.message : "A required reviewer, setting, source inspection or reconciliation failed."}`;
+    }
     codexFailure = { error, logKind: failure.logKind };
   } finally {
     codexElapsedMs = Date.now() - codexStartedAt;
   }
   decision = attachFixedPullRequest(decision, item, context, existingPriorReview?.markdown);
   decision = verifyRegressionProvenance(decision, item, context, reviewOpenclawDir, git);
+  const hanselmanComplete = decision.hanselmanReview?.status === "complete";
   const runtime = {
-    model: PUBLIC_CODEX_MODEL,
-    reasoningEffort: itemCodexProfile.reasoningEffort,
-    sandboxMode,
+    model:
+      strategy === "hanselman"
+        ? hanselmanComplete
+          ? `${PUBLIC_CODEX_MODEL} + claude-opus-5.5 + gpt-6-astra`
+          : "Hanselman incomplete (requested claude-opus-5.5 + gpt-6-astra)"
+        : PUBLIC_CODEX_MODEL,
+    reasoningEffort:
+      strategy === "hanselman"
+        ? hanselmanComplete
+          ? "high"
+          : "unverified"
+        : itemCodexProfile.reasoningEffort,
+    ...(strategy === "hanselman"
+      ? {
+          strategy,
+          hanselman: decision.hanselmanReview,
+        }
+      : {}),
+    sandboxMode:
+      strategy === "hanselman" ? `${sandboxMode} + copilot-pinned-source-only` : sandboxMode,
     serviceTier: itemCodexProfile.serviceTier,
     ...prompt.telemetry,
     contextElapsedMs,
