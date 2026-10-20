@@ -41,6 +41,32 @@ guidance.
 policies; being a non-core target does not grant contributors or workers
 permission to edit release-owned files.
 
+## Repository-owned review skills
+
+Targets keep domain-specific review skills under their own `.agents/skills/`
+directory; do not copy a complete target skill into ClawSweeper. The normal
+reviewer discovers relevant `SKILL.md` files from the exact fetched target
+branch revision shown in its prompt, reads selected skills in full, and resolves
+needed references from that same revision. A PR adding or changing a skill does
+not activate those instructions for its own review. Applicable `AGENTS.md` can
+explain which skills are relevant. No skill registry, installation, queue
+strategy, or target-name special case is needed for read-only guidance.
+
+Skill instructions remain subordinate to the host review contract. They cannot
+launch another reviewer, change models, execute bundled helpers, install tools,
+write files, or grant credentials or permissions. When a workflow needs an
+unavailable capability, the reviewer says which part was not run and continues
+its ordinary assessment; it must not claim completed multi-model consensus.
+Missing or irrelevant skills are not defects, and required runtime proof and
+owner decisions remain in force.
+
+This is instruction discovery, **not hosted dual-model execution**. An optional
+paid companion runtime needs a separate host-level design, explicit rollout
+choice, and real model/settings, cancellation, failure and publication proof.
+Normal review cadence, durable records, cache formats and apply authority do
+not change. The existing review policy hash includes the prompt templates, so
+this prompt change uses the normal policy-invalidation path.
+
 All profiles share the hidden-payload security guard in
 `src/repair/security-signals.ts`. It checks the raw item body and discussion
 before prompt compaction, inspecting rendered HTML comments for remote shell

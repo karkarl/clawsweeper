@@ -1,0 +1,1 @@
+- Reviewers discover relevant skills in the target repository at its pinned target-branch revision without copying skills into ClawSweeper or enabling extra model sessions.
