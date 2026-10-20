@@ -1,3 +1,12 @@
+import {
+  selectReviewSkill,
+  assertSkillConfigOutsideTarget,
+  skillExecutionIdentity,
+  reviewSkillLeaseTimeout,
+} from "./review-skill-config.js";
+import { preparePinnedReviewSkill, preparedSkillSourceDigest } from "./review-skill-source.js";
+import { reviewExecutionModel } from "./clawsweeper-review-policy-hash.js";
+import { PUBLIC_CODEX_MODEL } from "./codex-env.js";
 import { reviewBodyWithoutPreflight } from "./review-preflight-body.js";
 import { readPrAdmissionInput } from "./clawsweeper-pr-admission-input.js";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
@@ -88,6 +97,7 @@ export function prepareReviewCommand(args: Args, dependencies: PrepareReviewDepe
   }
 
   const profile = repoFromArgs(args);
+  const reviewSkillSelection = selectReviewSkill(args, targetRepo());
   const localRange = boolArg(args.local_range);
   const localOnly = boolArg(args.local_only) || localRange;
   if (
@@ -352,7 +362,20 @@ export function prepareReviewCommand(args: Args, dependencies: PrepareReviewDepe
       }
       throw error;
     }
+    if (reviewSkillSelection && !metadataOnly)
+      assertSkillConfigOutsideTarget(String(args.review_skill_config), openclawDir);
+    const reviewSkill =
+      reviewSkillSelection && !metadataOnly
+        ? preparePinnedReviewSkill(openclawDir, git.mainSha, reviewSkillSelection)
+        : undefined;
+    const reviewSkillIdentity = reviewSkillSelection
+      ? skillExecutionIdentity(
+          reviewSkillSelection,
+          reviewSkill ? preparedSkillSourceDigest(reviewSkill) : "metadata-only-no-inference",
+        )
+      : undefined;
     const reviewPolicy = reviewPolicyHash({ model, sandboxMode });
+    const reviewCacheModel = reviewExecutionModel(PUBLIC_CODEX_MODEL, reviewSkillIdentity);
     const explicitDispatch = isExplicitReviewDispatch(
       args,
       itemNumber !== undefined || itemNumbers !== undefined,
@@ -361,6 +384,8 @@ export function prepareReviewCommand(args: Args, dependencies: PrepareReviewDepe
 
     return {
       prAdmissionInput,
+      reviewSkill,
+      reviewCacheModel,
       localRange,
       localOnly,
       itemNumber,
@@ -375,6 +400,7 @@ export function prepareReviewCommand(args: Args, dependencies: PrepareReviewDepe
       model,
       sandboxMode,
       timeoutMs,
+      reviewLeaseTimeoutMs: reviewSkillLeaseTimeout(timeoutMs, reviewSkill?.selection),
       expectedSourceRevision,
       additionalPrompt,
       allowClosed,

@@ -60,12 +60,16 @@ its ordinary assessment; it must not claim completed multi-model consensus.
 Missing or irrelevant skills are not defects, and required runtime proof and
 owner decisions remain in force.
 
-This is instruction discovery, **not hosted dual-model execution**. An optional
-paid companion runtime needs a separate host-level design, explicit rollout
-choice, and real model/settings, cancellation, failure and publication proof.
-Normal review cadence, durable records, cache formats and apply authority do
-not change. The existing review policy hash includes the prompt templates, so
-this prompt change uses the normal policy-invalidation path.
+Discovery alone is **not dual-model execution**. Operators may explicitly add
+the [host-supervised optional runtime](review-skill-runtime.md) to one exact PR
+or a local committed range using `--review-skill <slug>` and a trusted execution
+config outside the target checkout. The host, not the skill or PR, selects and
+verifies the two reviewer models, coordinator and reasoning/context settings.
+Normal reviews remain unchanged. No automatic target-name selection, installation,
+queue cadence, durable-record schema, apply or merge authority is added. The
+ordinary review policy hash remains cadence-only. Existing review-model cache
+metadata binds selected pinned skill/reference content and the execution
+contract for explicitly opted-in reviews without re-admitting unchanged PRs.
 
 All profiles share the hidden-payload security guard in
 `src/repair/security-signals.ts`. It checks the raw item body and discussion

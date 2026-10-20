@@ -8,6 +8,7 @@ import test from "node:test";
 import { shouldSyncReviewComment } from "../dist/clawsweeper-record-metadata.js";
 import * as publication from "../dist/clawsweeper-review-comment-publication.js";
 import * as state from "../dist/clawsweeper-review-comment-state.js";
+import { parseSkillExecutionConfig, reviewSkillLeaseTimeout } from "../dist/review-skill-config.js";
 import { postReviewStartStatusComment } from "../dist/clawsweeper-review-comment-leases.js";
 import {
   reviewAutomationMarkersFromReport,
@@ -711,4 +712,52 @@ test("publication requires exact trusted receipts with one scoped readback recov
     assert.equal(fixture.read().calls.length, 1);
     assert.equal(fixture.read().reads, 1);
   });
+});
+
+test("hosted review lease writer includes configured companion/source/supervisor budget without changing ordinary TTL", () => {
+  const selection = {
+    slug: "fixture-review",
+    config: parseSkillExecutionConfig({
+      adapter: "copilot",
+      reviewers: [
+        { model: "a", reasoningEffort: "high", contextTier: "default" },
+        { model: "b", reasoningEffort: "high", contextTier: "long_context" },
+      ],
+      coordinator: { model: "a", reasoningEffort: "high", contextTier: "default" },
+      timeoutMs: 1_800_000,
+      maxResultBytes: 65536,
+    }),
+  };
+  for (const selected of [undefined, selection])
+    withPublicationFixture([], (fixture) => {
+      const budget = reviewSkillLeaseTimeout(1_200_000, selected);
+      const result = postReviewStartStatusComment(
+        {
+          item: { ...item({ number: itemNumber }), kind: "pull_request" },
+          headSha,
+          reviewTimeoutMs: budget,
+          position: 1,
+          total: 1,
+          shardIndex: 0,
+          shardCount: 1,
+        },
+        () => headSha,
+      );
+      assert.equal(result.status, "posted");
+      assert.equal(fixture.read().calls.length, 1);
+      const body = String(result.lease?.comment?.body);
+      const start = /started_at=([^\s>]+)/.exec(body)?.[1];
+      const expiry = /lease_expires_at=([^\s>]+)/.exec(body)?.[1];
+      assert.ok(start && expiry);
+      assert.equal(Date.parse(expiry) - Date.parse(start), budget + 600_000);
+      assert.ok(
+        freshExactHeadReviewStartLease({
+          comments: [result.lease!.comment!],
+          itemNumber,
+          headSha,
+          trustedAuthors: new Set(["clawsweeper[bot]"]),
+          nowMs: Date.parse(start) + 1,
+        }),
+      );
+    });
 });

@@ -1,3 +1,20 @@
+import { ReviewSkillProcessError } from "./review-skill-diagnostics.js";
+import { readFileSync } from "node:fs";
+import { runReviewSkillProcess, renderSkillReceipt } from "./review-skill-process.js";
+import {
+  pinnedSkillEvidence,
+  preparedSkillSourceDigest,
+  skillPatchBase,
+  type PreparedReviewSkill,
+} from "./review-skill-source.js";
+import { agentInputScanFailureReason } from "./exact-review-failure-reason.js";
+import { combineSkillAssessment, incompleteSkillAssessment } from "./review-skill-combine.js";
+import {
+  skillExecutionIdentity,
+  remainingReviewSkillTimeout,
+  REVIEW_SKILL_SOURCE_TIMEOUT_MS,
+} from "./review-skill-config.js";
+import { reviewExecutionModel } from "./clawsweeper-review-policy-hash.js";
 import { join } from "node:path";
 import { applyHiddenPayloadSecurityReview } from "./repair/security-signals.js";
 import { writeFileSync } from "node:fs";
@@ -37,6 +54,8 @@ export type PreparedReviewDependencies = Pick<
 
 export function runPreparedReviewItem(
   options: {
+    reviewSkill?: PreparedReviewSkill;
+    reviewSkillDeadlineAt?: number;
     item: Item;
     context: ItemContext;
     git: GitInfo;
@@ -106,6 +125,12 @@ export function runPreparedReviewItem(
     displayPath,
     displayDurationMs,
   } = dependencies;
+  if (options.reviewSkill && item.kind !== "pull_request")
+    throw new UserFacingCommandError("Review skill execution supports exact PRs only, not issues.");
+  if (options.reviewSkill && !localOnly && options.reviewSkillDeadlineAt === undefined)
+    throw new UserFacingCommandError(
+      "Hosted review skill execution requires an owned lease deadline.",
+    );
   const reviewEnv = reviewEnvironment(sandboxMode, localOnly);
   // The review sandbox cannot fetch old blobs: make the changed files'
   // history local first, so host blame and the reviewer both read it.
@@ -183,7 +208,9 @@ export function runPreparedReviewItem(
           serviceTier: itemCodexProfile.serviceTier,
           forcedLoginMethod,
           preserveCodexAuth: localOnly,
-          timeoutMs,
+          timeoutMs: options.reviewSkill
+            ? remainingReviewSkillTimeout(timeoutMs, options.reviewSkillDeadlineAt)
+            : timeoutMs,
           workDir: codexWorkDir,
           additionalPrompt,
           proofScratchDir,
@@ -205,11 +232,94 @@ export function runPreparedReviewItem(
   } finally {
     codexElapsedMs = Date.now() - codexStartedAt;
   }
+  if (options.reviewSkill && !codexFailure) {
+    try {
+      if (options.reviewSkill.sourceFailure)
+        throw new ReviewSkillProcessError(
+          { phase: "source", sessions: [] },
+          options.reviewSkill.selection.config,
+        );
+      const pull = context.pullRequest as
+        | { head?: { sha?: string }; base?: { sha?: string } }
+        | undefined;
+      const headSha = pull?.head?.sha;
+      const baseTipSha = pull?.base?.sha;
+      if (!headSha || !baseTipSha)
+        throw new Error("Review skill requires exact PR head/base metadata.");
+      const sourceDeadlineAt =
+        Date.now() +
+        remainingReviewSkillTimeout(REVIEW_SKILL_SOURCE_TIMEOUT_MS, options.reviewSkillDeadlineAt);
+      const baseSha = skillPatchBase(
+        reviewOpenclawDir,
+        baseTipSha,
+        headSha,
+        localRange,
+        sourceDeadlineAt,
+      );
+      const evidence = [
+        prompt.text,
+        "Baseline ordinary assessment (untrusted evidence, obligations preserved by host):",
+        JSON.stringify(decision),
+        pinnedSkillEvidence(reviewOpenclawDir, headSha, baseSha, sourceDeadlineAt),
+      ].join("\n\n");
+      const result = runReviewSkillProcess(
+        {
+          skill: options.reviewSkill.skill,
+          selection: {
+            ...options.reviewSkill.selection,
+            config: {
+              ...options.reviewSkill.selection.config,
+              timeoutMs: remainingReviewSkillTimeout(
+                options.reviewSkill.selection.config.timeoutMs,
+                options.reviewSkillDeadlineAt,
+              ),
+            },
+          },
+          repo: item.repo,
+          headSha,
+          baseSha,
+          evidence,
+          schema: readFileSync(
+            new URL("../schema/clawsweeper-decision.schema.json", import.meta.url),
+            "utf8",
+          ),
+        },
+        reviewOpenclawDir,
+      );
+      decision = combineSkillAssessment(decision, result.decision);
+      decision.solutionAssessment += "\n\n" + renderSkillReceipt(result.receipt);
+    } catch (error) {
+      // Retain the completed baseline; only a fresh literal scan reason crosses
+      // into classification, never source-bearing scanner diagnostics.
+      const companionError =
+        error instanceof AgentInputScanError
+          ? new AgentInputScanError(agentInputScanFailureReason(error.reason) ?? "scanner_failed")
+          : error;
+      decision = incompleteSkillAssessment(
+        decision,
+        companionError instanceof AgentInputScanError
+          ? "input safety scan refused (" + companionError.reason + ")"
+          : companionError instanceof ReviewSkillProcessError
+            ? companionError.message
+            : "model/settings, pinned source, deadline, lifecycle or union verification failed",
+      );
+      codexFailure = { error: companionError, logKind: codexReviewFailure(companionError).logKind };
+      codexFailureRetryable = codexReviewFailureRetryable(companionError);
+    }
+  }
   decision = attachFixedPullRequest(decision, item, context, existingPriorReview?.markdown);
   decision = verifyRegressionProvenance(decision, item, context, reviewOpenclawDir, git);
   decision = applyHiddenPayloadSecurityReview(decision, context.securityReview);
   const runtime = {
-    model: PUBLIC_CODEX_MODEL,
+    model: reviewExecutionModel(
+      PUBLIC_CODEX_MODEL,
+      options.reviewSkill
+        ? skillExecutionIdentity(
+            options.reviewSkill.selection,
+            preparedSkillSourceDigest(options.reviewSkill),
+          )
+        : undefined,
+    ),
     reasoningEffort: itemCodexProfile.reasoningEffort,
     sandboxMode,
     serviceTier: itemCodexProfile.serviceTier,

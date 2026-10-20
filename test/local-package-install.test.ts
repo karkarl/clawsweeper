@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
   copyFileSync,
+  existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -100,6 +101,7 @@ test(
     const { packages: runtimeDependencies } = await collectLocalModules(sourceRoot, [
       "dist/clawsweeper-local.js",
       "dist/codex-process-worker.js",
+      "dist/review-skill-worker.js",
       "dist/openclaw-process-worker.js",
       "dist/git-acquisition-worker.js",
       "scripts/setup-review-tools.mjs",
@@ -107,7 +109,19 @@ test(
     assert.deepEqual(
       metadata.dependencies ?? {},
       Object.fromEntries(
-        [...runtimeDependencies].sort().map((name) => [name, sourceMetadata.dependencies[name]]),
+        [...runtimeDependencies]
+          .sort()
+          .filter((name) => Object.hasOwn(sourceMetadata.dependencies ?? {}, name))
+          .map((name) => [name, sourceMetadata.dependencies[name]]),
+      ),
+    );
+    assert.deepEqual(
+      metadata.optionalDependencies ?? {},
+      Object.fromEntries(
+        [...runtimeDependencies]
+          .sort()
+          .filter((name) => Object.hasOwn(sourceMetadata.optionalDependencies ?? {}, name))
+          .map((name) => [name, sourceMetadata.optionalDependencies[name]]),
       ),
     );
     assert.equal(metadata.bin["clawsweeper-review"], "dist/clawsweeper-local.js");
@@ -256,7 +270,14 @@ test(
     assert.deepEqual(tree(installed), staged);
     const installedPackages = new Map<
       string,
-      { root: string; version: string; dependencies: Record<string, string>; declared: string[] }
+      {
+        root: string;
+        name: string;
+        version: string;
+        dependencies: Record<string, string>;
+        declared: string[];
+        optional: Record<string, string>;
+      }
     >();
     type NpmNode = {
       name: string;
@@ -286,31 +307,61 @@ test(
         assert.equal(node.version, packageJson.version);
       }
       const dependencies = node.dependencies ?? {};
-      const declared = Object.keys(packageJson.dependencies ?? {}).sort();
+      const optional: Record<string, string> = packageJson.optionalDependencies ?? {};
+      const declared = Object.keys(packageJson.dependencies ?? {})
+        .filter((name) => !Object.hasOwn(optional, name))
+        .sort();
+      const admitted = new Set([...declared, ...Object.keys(optional)]);
+      for (const spec of Object.values({ ...packageJson.dependencies, ...optional })) {
+        assert.equal(typeof spec, "string");
+        assert.ok(!(spec as string).startsWith("npm:"), "dependency aliases are not admitted");
+      }
       const entry = installedPackages.get(node.path) ?? {
         root: node.path,
+        name: packageJson.name,
         version: packageJson.version,
         dependencies: {},
         declared,
+        optional,
       };
       // npm's logical tree can omit children at a repeated physical node. Merge
       // each visible parent edge, then check completeness after traversing it.
       assert.deepEqual(entry.declared, declared);
+      assert.deepEqual(entry.optional, optional);
+      const present: NpmNode[] = [];
       for (const [name, child] of Object.entries(dependencies)) {
+        assert.ok(admitted.has(name), "installed tree contains an undeclared dependency");
+        if (Object.keys(child).length === 0) {
+          assert.ok(
+            Object.hasOwn(optional, name),
+            "only a declared optional dependency may be absent",
+          );
+          continue;
+        }
         assert.equal(name, child.name);
+        present.push(child);
         assert.ok(!entry.dependencies[name] || entry.dependencies[name] === child.path);
         entry.dependencies[name] = child.path;
       }
       if (!isRoot) installedPackages.set(node.path, entry);
-      else assert.deepEqual(Object.keys(dependencies).sort(), declared);
-      for (const child of Object.values(dependencies)) verifyDependencies(child);
+      else
+        for (const name of declared)
+          assert.ok(Object.hasOwn(entry.dependencies, name), "required root dependency missing");
+      for (const child of present) verifyDependencies(child);
     }
     verifyDependencies(
       JSON.parse(run(npm, ["ls", "--prefix", prefix, "--all", "--long", "--json"])),
       true,
     );
-    for (const entry of installedPackages.values())
-      assert.deepEqual(Object.keys(entry.dependencies).sort(), entry.declared);
+    for (const entry of installedPackages.values()) {
+      const names = Object.keys(entry.dependencies);
+      for (const required of entry.declared)
+        assert.ok(names.includes(required), "required dependency missing from installed closure");
+      assert.ok(
+        names.every((name) => entry.declared.includes(name) || Object.hasOwn(entry.optional, name)),
+        "extra undeclared dependency edge",
+      );
+    }
     const dependencyTrees = [...installedPackages.keys()].map((path) => ({
       path,
       files: tree(path),
@@ -353,11 +404,18 @@ if (process.argv[1] && realpathSync(process.argv[1]).startsWith(${JSON.stringify
     );
     const installedEnv = { ...env, NODE_OPTIONS: `--import=${pathToFileURL(guard).href}` };
     const probe = join(installed, "package-boundary-probe.mjs");
-    const transitive = [...installedPackages.keys()].find(
-      (path) =>
-        path !== installed &&
-        !Object.values(installedPackages.get(installed)!.dependencies).includes(path),
-    );
+    const transitive = [...installedPackages.keys()].find((path) => {
+      if (
+        path === installed ||
+        Object.values(installedPackages.get(installed)!.dependencies).includes(path)
+      )
+        return false;
+      const manifest = JSON.parse(readFileSync(join(path, "package.json"), "utf8"));
+      const main = typeof manifest.main === "string" ? manifest.main : "index.js";
+      // Binary platform payloads have no importable JS entry. Keep auditing
+      // their closure/integrity, but exercise the import guard with real JS.
+      return /\.(?:m?js|cjs)$/.test(main) && existsSync(join(path, main));
+    });
     assert.ok(transitive, "exercise an undeclared hoisted transitive dependency");
     const transitiveName = JSON.parse(readFileSync(join(transitive, "package.json"), "utf8")).name;
     try {
@@ -442,29 +500,83 @@ if (process.argv[1] && realpathSync(process.argv[1]).startsWith(${JSON.stringify
     const lock = JSON.parse(readFileSync(join(prefix, "package-lock.json"), "utf8"));
     assert.equal(lock.packages[""].dependencies[metadata.name], "file:clawsweeper-local.tgz");
     assert.equal(lock.packages[""].name, "clawsweeper-local-install");
-    for (const path of Object.keys(lock.packages)) {
-      assert.ok(
-        path === "" || (path.startsWith("node_modules/") && !path.split("/").includes("..")),
-      );
-      assert.ok(
-        path === "" || installedPackages.has(join(prefix, path)),
-        "lock contains unverified package",
-      );
+    // A lock may retain incompatible platform packages, but only if an
+    // installed parent's manifest explicitly declares that absent optional edge.
+    const absentOptional = new Map<string, { name: string; spec: string }>();
+    for (const parent of installedPackages.values()) {
+      const parentLock = lock.packages[relative(prefix, parent.root).replaceAll("\\", "/")];
+      for (const [name, spec] of Object.entries(parent.optional)) {
+        assert.equal(parentLock.optionalDependencies?.[name], spec);
+        if (Object.hasOwn(parent.dependencies, name)) continue;
+        for (
+          let directory = parent.root;
+          directory === prefix || directory.startsWith(prefix + sep);
+          directory = dirname(directory)
+        ) {
+          if (basename(directory) !== "node_modules")
+            absentOptional.set(join(directory, "node_modules", name), { name, spec });
+          if (directory === prefix) break;
+        }
+      }
     }
-    const resolution = [...installedPackages.values()]
-      .map(({ root, version }) => {
-        const path = relative(prefix, root).replaceAll("\\", "/");
-        const entry = lock.packages[path];
-        assert.equal(entry.version, version);
+    const resolution = Object.entries(lock.packages)
+      .flatMap(([path, raw]) => {
+        assert.ok(
+          path === "" || (path.startsWith("node_modules/") && !path.split("/").includes("..")),
+        );
+        if (path === "") return [];
+        const entry = raw as {
+          version: string;
+          name?: string;
+          optional?: boolean;
+          resolved: string;
+          integrity: string;
+        };
+        const full = join(prefix, path);
+        const present = installedPackages.get(full);
+        const absent = absentOptional.get(full);
+        let name: string;
+        if (present) {
+          assert.equal(entry.version, present.version);
+          name = present.name;
+        } else {
+          assert.ok(absent, "lock contains unverified package");
+          assert.equal(
+            entry.optional,
+            true,
+            "only an explicitly optional lock entry may be absent",
+          );
+          assert.equal(
+            existsSync(full),
+            false,
+            "an installed package cannot hide as an absent optional",
+          );
+          // Current runtime platform edges are exact pins. A new range needs its
+          // own range validator, never a blanket optional-dependency exemption.
+          assert.equal(
+            entry.version,
+            absent.spec,
+            "absent optional version must match its declared exact pin",
+          );
+          name = absent.name;
+        }
+        if (entry.name !== undefined) assert.equal(entry.name, name);
         assert.match(entry.integrity, /^sha512-[A-Za-z0-9+/]+={0,2}$/);
-        if (root === installed) assert.equal(entry.resolved, "file:clawsweeper-local.tgz");
+        if (full === installed) assert.equal(entry.resolved, "file:clawsweeper-local.tgz");
         else {
           const url = new URL(entry.resolved);
           assert.equal(url.protocol, "https:");
           assert.equal(url.host, "registry.npmjs.org");
           assert.equal(url.username + url.password + url.search + url.hash, "");
+          assert.equal(
+            decodeURIComponent(url.pathname),
+            "/" + name + "/-/" + name.split("/").at(-1) + "-" + entry.version + ".tgz",
+            "registry tarball must match the verified package identity/version",
+          );
         }
-        return { path, version, resolved: entry.resolved, integrity: entry.integrity };
+        return [
+          { path, version: entry.version, resolved: entry.resolved, integrity: entry.integrity },
+        ];
       })
       .sort((a, b) => a.path.localeCompare(b.path));
     if (producer) assert.deepEqual(resolution, producer.resolution);

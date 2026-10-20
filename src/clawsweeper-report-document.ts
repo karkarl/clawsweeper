@@ -76,7 +76,7 @@ export function localCheckoutAccessSourceForDecision(
 
 export function reviewStatusForDecision(
   decision: Pick<Decision, "localCheckoutAccess" | "summary"> &
-    Partial<Pick<Decision, "closeReason" | "oversizedPullRequest">>,
+    Partial<Pick<Decision, "closeReason" | "oversizedPullRequest" | "codexTerminalFailure">>,
 ): "complete" | "failed" {
   if (
     decision.closeReason === "oversized_pull_request" &&
@@ -84,6 +84,7 @@ export function reviewStatusForDecision(
   )
     return "complete";
   return localCheckoutAccessForDecision(decision) === "verified" &&
+    !decision.codexTerminalFailure &&
     !decision.summary.startsWith("Codex review failed")
     ? "complete"
     : "failed";

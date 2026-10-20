@@ -1,0 +1,1 @@
+- Add explicit host-supervised target-owned dual-model review skills to exact PR and local-range reviews, preserving ordinary proof and owner blockers and recording verified model/settings and full finding-union consensus.

@@ -51,6 +51,7 @@ export function runLocalRangeReview(args: Args, dependencies: LocalRangeCommandD
   const preparation = prepareReviewCommand(args, dependencies);
   const {
     localRangeData,
+    reviewSkill,
     openclawDir,
     artifactDir,
     reviewWorkspaceDir,
@@ -183,6 +184,7 @@ export function runLocalRangeReview(args: Args, dependencies: LocalRangeCommandD
         itemCodexProfile: codexItemProfile(item.authorAssociation, null),
         existingPriorReview: null,
         contextElapsedMs: Date.now() - contextStartedAt,
+        ...(reviewSkill ? { reviewSkill } : {}),
       },
       dependencies,
     );

@@ -62,6 +62,8 @@ everything else requires human comparison with current main.
   boundaries
 - [Issue review advisory labels](work-lane.md) — active; structured review labels
 - [Review cache](review-cache.md) — active; reusable review-state contract
+- [Optional target-owned review skill execution](review-skill-runtime.md) — active;
+  explicit host-owned model contract and bounded read-only companion runtime
 - [Intake triage](intake-triage.md) — active; bounded preliminary classification
 - [Local review preflight summary](portable-review-receipt.md) — proposed
   local-range export; bounded advisory PR-body handoff and review-content reader

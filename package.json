@@ -98,6 +98,9 @@
     "playwright-core": "^1.63.0",
     "typescript": "^7.0.2"
   },
+  "optionalDependencies": {
+    "@github/copilot-sdk": "1.0.22"
+  },
   "engines": {
     "node": ">=24"
   },
