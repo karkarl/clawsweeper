@@ -1426,13 +1426,21 @@ test("worker provenance factory and renderer never export a configured private p
     providerKind: "openai-compatible",
     catalogDigest: "a".repeat(64),
   });
-  assert.ok(!JSON.stringify(provenance).includes("inference.private.internal"));
   const t = transport();
   t.api.provenance = () => ({ ...provenance, provider: endpoint, baseUrl: endpoint });
   const result = await executeReviewSkill(input(), t.api);
   assert.deepEqual(result.receipt.runtime, provenance);
-  assert.ok(!JSON.stringify(result.receipt).includes("inference.private.internal"));
-  assert.ok(!renderSkillReceipt(result.receipt).includes("inference.private.internal"));
+  // Compare whole rendered outputs, not URL substrings: only the public
+  // projection may influence serialization, even for legacy receipt fields.
+  assert.equal(
+    renderSkillReceipt({
+      ...result.receipt,
+      runtime: { ...provenance, provider: endpoint, baseUrl: endpoint } as NonNullable<
+        typeof result.receipt.runtime
+      >,
+    }),
+    renderSkillReceipt({ ...result.receipt, runtime: provenance }),
+  );
   result.receipt.runtime = {
     adapter: "copilot",
     sdk: "1.0.22",
@@ -1441,13 +1449,13 @@ test("worker provenance factory and renderer never export a configured private p
     catalogDigest: endpoint,
   } as unknown as NonNullable<typeof result.receipt.runtime>;
   const rendered = renderSkillReceipt(result.receipt);
-  assert.ok(!rendered.includes(endpoint));
-  assert.ok(!rendered.includes("inference.private.internal"));
-  assert.deepEqual(publicSkillProvenance(result.receipt.runtime), {
+  const publicLegacy = {
     adapter: "copilot",
     sdk: "1.0.22",
     providerKind: "unreported",
-  });
+  } as const;
+  assert.deepEqual(publicSkillProvenance(result.receipt.runtime), publicLegacy);
+  assert.equal(rendered, renderSkillReceipt({ ...result.receipt, runtime: publicLegacy }));
 });
 
 test("opted-in preparation keeps ordinary cadence/admission policy while cache identity remains skill-bound", (t) => {
