@@ -1,3 +1,5 @@
+import { ReviewLeaseSupersededError } from "./clawsweeper-review-comment-leases.js";
+import { ReviewSkillAuthorityError } from "./review-skill-diagnostics.js";
 import { reviewSkillLeaseDeadline } from "./review-skill-config.js";
 import { reviewExecutionCacheCompatible } from "./clawsweeper-review-policy-hash.js";
 import { runLocalRangeReview } from "./clawsweeper-local-command.js";
@@ -1436,6 +1438,12 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           forcedLoginMethod, itemCodexProfile, existingPriorReview, contextElapsedMs,
           ...(reviewSkill ? { reviewSkill } : {}),
           ...(reviewSkillDeadlineAt === undefined ? {} : { reviewSkillDeadlineAt }),
+          ...(reviewSkill && !localOnly ? {revalidateReviewSkillAuthority: () => {
+            try {
+              if(!acquiredReviewLease)throw new ReviewLeaseSupersededError();
+              return reviewSkillLeaseDeadline(dependencies.revalidateReviewStartLease({item,lease:acquiredReviewLease,headSha:pullHeadShaFromContext(context) ?? ""}));
+            } catch(error) { throw new ReviewSkillAuthorityError(error instanceof ReviewLeaseSupersededError); }
+          }} : {}),
           onPrompt: (prompt) => { diagnosticPrompt = prompt; },
         }, dependencies);
         const codexElapsedMs = runtime.codexElapsedMs;

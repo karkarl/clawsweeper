@@ -146,3 +146,15 @@ export class ReviewSkillProcessError extends Error {
     this.diagnostic = diagnostic;
   }
 }
+
+// Fixed host-only identity preserves existing cancellation/retry classification.
+export class ReviewSkillAuthorityError extends Error {
+  constructor(readonly superseded: boolean) {
+    super(
+      superseded
+        ? "Explicit review skill cancelled: live review authority was superseded."
+        : "Explicit review skill incomplete: live review authority unavailable; retry required.",
+    );
+    this.name = "ReviewSkillAuthorityError";
+  }
+}

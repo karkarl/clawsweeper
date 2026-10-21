@@ -4,6 +4,8 @@ import { CopilotClient, RuntimeConnection, defineTool } from "@github/copilot-sd
 import {
   executeReviewSkill,
   closeReviewSkillSession,
+  stopReviewSkillClient,
+  requestReviewSkillAbort,
   reviewSkillSourcePermission,
   skillResponseSchema,
   decodeSkillWire,
@@ -15,8 +17,13 @@ import {
   readSkillBlob,
   assertSkillSourcePath,
   verifyPinnedSkillFinding,
+  scanSkillSourceListing,
 } from "./review-skill-source.js";
-import { scanAgentInput, AgentInputScanError } from "./agent-input-scan.js";
+import {
+  scanAgentInput,
+  AgentInputScanError,
+  trustedReviewGitExecutable,
+} from "./agent-input-scan.js";
 import { readSkillProviderCatalog, skillProviderProvenance } from "./review-skill-provider.js";
 import { sanitizeSkillDiagnostic, type SkillRunDiagnostic } from "./review-skill-diagnostics.js";
 import { readReviewGit } from "./pr-review-evidence.js";
@@ -26,6 +33,7 @@ const cwd = process.argv[3]!;
 const resultPath = join(stateDir, "result.json");
 const input = JSON.parse(readFileSync(0, "utf8")) as SkillInput;
 const deadlineAt = Date.now() + input.selection.config.timeoutMs;
+const gitExecutable = trustedReviewGitExecutable(cwd, input.gitExecutable);
 const provider = input.selection.config.provider;
 const diagnostic: SkillRunDiagnostic = { phase: "source", sessions: [] };
 let catalog: Awaited<ReturnType<typeof readSkillProviderCatalog>> | undefined;
@@ -47,13 +55,7 @@ const client = new CopilotClient({
 });
 const transport: SkillTransport = {
   start: () => client.start(),
-  stop: async () => {
-    const errors = await client.stop();
-    if (errors.length) {
-      await client.forceStop();
-      throw new Error("Review skill cleanup incomplete.");
-    }
-  },
+  stop: () => stopReviewSkillClient(client),
   models: () => client.listModels(),
   provenance: () => skillProviderProvenance(input.selection.config, catalog?.digest),
   scan: (text) => {
@@ -69,6 +71,11 @@ const transport: SkillTransport = {
     const inspected = new Set<string>();
     let readBytes = 0;
     let sourceFailure: unknown;
+    const scanSource = (content: string) => {
+      readBytes += Buffer.byteLength(content);
+      if (readBytes > 4 * 1024 * 1024) throw new Error("Review skill source-read budget exceeded.");
+      transport.scan(content);
+    };
     const read = (revision: "head" | "base", path: string) => {
       try {
         if (revision !== "head" && revision !== "base") throw new Error("Invalid source revision.");
@@ -77,11 +84,9 @@ const transport: SkillTransport = {
           revision === "head" ? input.headSha : input.baseSha,
           path,
           deadlineAt,
+          gitExecutable,
         );
-        readBytes += Buffer.byteLength(content);
-        if (readBytes > 4 * 1024 * 1024)
-          throw new Error("Review skill source-read budget exceeded.");
-        transport.scan(content);
+        scanSource(content);
         inspected.add(revision + ":" + path);
         return content;
       } catch (error) {
@@ -119,14 +124,15 @@ const transport: SkillTransport = {
               "ls-tree",
               "-r",
               "--name-only",
+              "-z",
               input.headSha,
               "--",
               ...(normalized ? [normalized] : []),
             ],
-            { deadlineAt, maxBytes: 64 * 1024 },
+            { deadlineAt, maxBytes: 64 * 1024, executable: gitExecutable },
           );
           if (!raw) throw new Error("Review skill source listing failed or over budget.");
-          return raw.toString("utf8");
+          return scanSkillSourceListing(raw, scanSource);
         } catch (error) {
           sourceFailure = error;
           throw error;
@@ -175,6 +181,7 @@ const transport: SkillTransport = {
     const observedEfforts = new Set<string | undefined>();
     let observedBytes = 0;
     let overBudget = false;
+    let outputAbort: ReturnType<typeof requestReviewSkillAbort> | undefined;
     session.on("assistant.usage", (event) => {
       observed.add(event.data.model);
       observedEfforts.add(event.data.reasoningEffort);
@@ -183,7 +190,7 @@ const transport: SkillTransport = {
       observedBytes += Buffer.byteLength(event.data.deltaContent);
       if (observedBytes > input.selection.config.maxResultBytes) {
         overBudget = true;
-        void session.abort();
+        outputAbort ??= requestReviewSkillAbort(session);
       }
     });
     return {
@@ -207,15 +214,29 @@ const transport: SkillTransport = {
           diagnostic,
         );
       },
-      close: () => closeReviewSkillSession(session),
+      close: () => closeReviewSkillSession(session, outputAbort),
       verifySource: (finding) => {
-        verifyPinnedSkillFinding(cwd, input.headSha, input.baseSha, finding, inspected, deadlineAt);
+        verifyPinnedSkillFinding(
+          cwd,
+          input.headSha,
+          input.baseSha,
+          finding,
+          inspected,
+          deadlineAt,
+          gitExecutable,
+        );
       },
     };
   },
 };
 try {
-  const fresh = loadPinnedReviewSkill(cwd, input.skill.revision, input.skill.slug, deadlineAt);
+  const fresh = loadPinnedReviewSkill(
+    cwd,
+    input.skill.revision,
+    input.skill.slug,
+    deadlineAt,
+    gitExecutable,
+  );
   if (fresh.digest !== input.skill.digest) throw new Error("Review skill pinned source drift.");
   scanAgentInput({
     cwd,
@@ -223,7 +244,7 @@ try {
     source: { kind: "committed", baseSha: input.baseSha, headSha: input.headSha },
     timeoutMs: deadlineAt - Date.now(),
   });
-  const result = await executeReviewSkill(input, transport, diagnostic);
+  const result = await executeReviewSkill(input, transport, diagnostic, deadlineAt);
   diagnostic.phase = "result";
   const text = JSON.stringify(result);
   if (Buffer.byteLength(text) > input.selection.config.maxResultBytes)

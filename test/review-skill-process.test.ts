@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import childProcess, { execFileSync, spawn } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { runAgentWorkerProcess } from "../dist/agent-runner.js";
-import { reviewSkillProcessEnv } from "../dist/review-skill-process.js";
+import {
+  reviewSkillProcessEnv,
+  runReviewSkillProcess,
+  assertSeparateSkillCredential,
+} from "../dist/review-skill-process.js";
 import { readSkillProviderCatalog } from "../dist/review-skill-provider.js";
 import { parseSkillExecutionConfig } from "../dist/review-skill-config.js";
 
@@ -245,4 +250,87 @@ test("BYOK strict response schema requires both advertised structured-output con
     );
     await assert.rejects(readSkillProviderCatalog(config(), Date.now() + 1000), /capabilities/);
   }
+});
+
+test("inference aliases of publication credentials fail before worker launch without leaking values", (t) => {
+  const oldEnv = process.env;
+  const root = mkdtempSync(join(tmpdir(), "skill-credential-boundary-"));
+  t.after(() => {
+    process.env = oldEnv;
+    rmSync(root, { recursive: true, force: true });
+  });
+  let launches = 0;
+  t.mock.method(childProcess, "spawnSync", () => {
+    launches++;
+    throw new Error("Unexpected process launch");
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  const publicationNames = [
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+    "REPO_TOKEN",
+    "COMMIT_SWEEPER_TARGET_GH_TOKEN",
+    "CLAWSWEEPER_PUBLIC_GH_TOKEN",
+    "CLAWSWEEPER_TARGET_GH_TOKEN",
+    "CLAWSWEEPER_PROOF_INSPECTION_TOKEN",
+    "CLAWSWEEPER_STATE_REPO_TOKEN",
+    "BOOTSTRAP_GITHUB_TOKEN",
+    "ANOTHER_TARGET_GH_TOKEN",
+    "BOOTSTRAP_GITHUB_ENTERPRISE_TOKEN",
+    "CLAWSWEEPER_DISPATCH_TOKEN",
+    "CLAWSWEEPER_HOSTED_TARGET_METADATA_TOKEN",
+    "CLAWSWEEPER_INVENTORY_TOKEN",
+    "CLAWSWEEPER_INVENTORY_TOKEN_NEW_ORG",
+    "FUTURE_OPERATOR_BINDING",
+  ];
+  for (const selected of [
+    "CLAWSWEEPER_SKILL_TOKEN",
+    "CLAWSWEEPER_SKILL_API_KEY",
+    "OPENROUTER_API_KEY",
+  ] as const) {
+    for (const publicationName of publicationNames) {
+      process.env = {
+        PATH: oldEnv.PATH,
+        SystemRoot: oldEnv.SystemRoot,
+        [selected]: "fixture-secret-value",
+        [publicationName]: " fixture-secret-value ",
+      };
+      const selectedConfig = config();
+      if (selected === "CLAWSWEEPER_SKILL_TOKEN") delete selectedConfig.provider;
+      else selectedConfig.provider = { baseUrl: "https://example.invalid/v1", apiKeyEnv: selected };
+      assert.throws(
+        () =>
+          runReviewSkillProcess(
+            { selection: { slug: "fixture", config: selectedConfig } } as Parameters<
+              typeof runReviewSkillProcess
+            >[0],
+            root,
+          ),
+        (error: Error) => {
+          assert.equal(
+            error.message,
+            "Review skill incomplete: inference requires a separate credential from publication.",
+          );
+          return true;
+        },
+      );
+    }
+    assert.doesNotThrow(() =>
+      assertSeparateSkillCredential(
+        { [selected]: "distinct-inference", GH_TOKEN: "distinct-publication" },
+        selected,
+      ),
+    );
+    assert.throws(
+      () => assertSeparateSkillCredential({ [selected]: " " }, selected),
+      /not configured/,
+    );
+  }
+  assert.equal(launches, 0);
 });

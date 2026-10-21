@@ -240,6 +240,11 @@ export interface CreateReviewCommandWorkflowDependencies {
     queueAuthority?: ExactReviewQueueAuthority | null;
     allowSupersededLeaseCleanup?: boolean;
   }) => ReviewStartStatusCommentResult;
+  revalidateReviewStartLease: (options: {
+    item: Item;
+    lease: AcquiredReviewStartLease;
+    headSha: string;
+  }) => string;
   previousClawSweeperReviewDigestFromReport: (markdown: string) => string | null;
   pullHeadShaFromContext: (context: ItemContext) => string | null;
   pullRequestHeadSha: (number: number) => string;

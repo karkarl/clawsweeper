@@ -21,6 +21,7 @@ import {
 import type { PinnedReviewSkill } from "./review-skill-source.js";
 
 export interface SkillInput {
+  gitExecutable?: string;
   selection: ReviewSkillSelection;
   skill: PinnedReviewSkill;
   repo: string;
@@ -315,9 +316,12 @@ export async function executeReviewSkill(
   input: SkillInput,
   transport: SkillTransport,
   diagnostic: SkillRunDiagnostic = { phase: "startup", sessions: [] },
+  workerDeadlineAt = Date.now() + input.selection.config.timeoutMs,
 ): Promise<{ decision: Decision; receipt: SkillReceipt }> {
-  const deadlineAt = Date.now() + input.selection.config.timeoutMs;
+  // Source reload/scanning already consumed the worker budget; never restart it.
+  const deadlineAt = Math.min(workerDeadlineAt, Date.now() + input.selection.config.timeoutMs);
   const sessions: SkillSession[] = [];
+  const acquisitions: Promise<unknown>[] = [];
   const receipts: SkillReceipt["sessions"] = [];
   let cancelled = false;
   let deadlineTimer: NodeJS.Timeout | undefined;
@@ -343,12 +347,11 @@ export async function executeReviewSkill(
       usageReasoningEffort: "unreported",
     };
     diagnostic.sessions.push(progress);
-    const session = await transport.create(requested, role);
+    const acquisition = transport.create(requested, role);
+    acquisitions.push(acquisition);
+    const session = await acquisition;
     sessions.push(session);
-    if (cancelled) {
-      await session.close();
-      throw new Error("Review skill cancelled.");
-    }
+    if (cancelled) throw new Error("Review skill cancelled.");
     if (!session.id || sessions.some((other) => other !== session && other.id === session.id))
       throw new Error("Review skill sessions are not independent.");
     const verify = async (stage: "before" | "after") => {
@@ -401,7 +404,9 @@ export async function executeReviewSkill(
   const work = async () => {
     // listModels does not start the SDK: explicit lifecycle start comes first.
     phase("startup");
-    await transport.start();
+    const startup = transport.start();
+    acquisitions.push(startup);
+    await startup;
     phase("catalog");
     const models = await transport.models();
     for (const requested of [
@@ -427,7 +432,13 @@ export async function executeReviewSkill(
     const independent = input.selection.config.reviewers.map((model, index) =>
       run(model, index === 0 ? "reviewer-0" : "reviewer-1", reviewerPrompt),
     );
-    const outputs = await Promise.all(independent);
+    const settled = await Promise.allSettled(independent);
+    const failure = settled.find((result) => result.status === "rejected");
+    if (failure?.status === "rejected") throw failure.reason;
+    const outputs = settled.map((result) => {
+      if (result.status === "rejected") throw result.reason;
+      return result.value;
+    });
     phase("reviewer_output");
     const reviews = outputs.map((output) => parseSkillReviewer(output.response, diagnostic));
     const coordinatorPrompt =
@@ -490,6 +501,10 @@ export async function executeReviewSkill(
     if (deadlineTimer) clearTimeout(deadlineTimer);
     const primaryPhase = diagnostic.phase;
     diagnostic.phase = "cleanup";
+    // Finish every in-flight resource acquisition before taking the close
+    // inventory. A late create belongs to this cleanup, never an unawaited
+    // task racing global shutdown. The outer supervisor bounds stuck SDK calls.
+    await Promise.allSettled(acquisitions);
     // Attempt every close, including synchronous refusals, and always attempt
     // global shutdown. The managed outer process bounds a hung abort/stop.
     closeResults = await Promise.allSettled(
@@ -516,12 +531,44 @@ export async function executeReviewSkill(
   return result!;
 }
 
+// The SDK can either return cleanup errors or reject before process teardown.
+// Force-stop both failure paths, without replacing the original failure or
+// turning forced cleanup into a successful review. The outer owner bounds hangs.
+export async function stopReviewSkillClient(client: {
+  stop(): Promise<Error[]>;
+  forceStop(): Promise<unknown>;
+}): Promise<void> {
+  let failure: unknown;
+  try {
+    const errors = await client.stop();
+    if (!errors.length) return;
+    failure = errors[0];
+  } catch (error) {
+    failure = error;
+  }
+  await Promise.allSettled([Promise.resolve().then(() => client.forceStop())]);
+  throw failure;
+}
+
+// Event callbacks cannot leave a rejecting abort promise unobserved. Retain its
+// settled outcome immediately and let the owned close path report the failure.
+export function requestReviewSkillAbort(session: {
+  abort(): Promise<unknown>;
+}): Promise<PromiseSettledResult<unknown>> {
+  return Promise.resolve()
+    .then(() => session.abort())
+    .then(
+      (value) => ({ status: "fulfilled" as const, value }),
+      (reason: unknown) => ({ status: "rejected" as const, reason }),
+    );
+}
+
 // Abort refusal must not prevent disconnection, and a second cleanup failure
 // must not replace the first one's identity. The SDK remains behind its worker.
-export async function closeReviewSkillSession(session: {
-  abort(): Promise<unknown>;
-  disconnect(): Promise<unknown>;
-}): Promise<void> {
+export async function closeReviewSkillSession(
+  session: { abort(): Promise<unknown>; disconnect(): Promise<unknown> },
+  priorAbort?: Promise<PromiseSettledResult<unknown>>,
+): Promise<void> {
   let failed = false;
   let failure: unknown;
   try {
@@ -538,6 +585,8 @@ export async function closeReviewSkillSession(session: {
       failure = error;
     }
   }
+  const prior = await priorAbort;
+  if (prior?.status === "rejected") throw prior.reason;
   if (failed) throw failure;
 }
 

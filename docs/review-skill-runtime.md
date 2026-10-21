@@ -28,11 +28,17 @@ resolved within that skill directory, including standard inline and reference-
 definition angle destinations such as `<references/review guide.md>` with spaces;
 missing, escaping, non-text or oversized
 files fail closed. Limits: 128 KiB/file, 512 KiB total, 24 files, 80 changed
-source files and 2 MiB changed-source text. A missing/unreadable/escaping/
+source files and 2 MiB changed-source text. Raw Git changed-path inventories and
+SDK source listings must decode losslessly as UTF-8 before any path lookup or
+rendering. Unsupported byte filenames fail incomplete, never as a fabricated
+deleted path; NUL framing prevents Git quoting from concealing invalid bytes. A missing/unreadable/escaping/
 non-text/oversized skill or reference becomes a literal source-failure state: the
 ordinary baseline still runs, then the companion is explicitly incomplete without
 launching its SDK. Unknown source never supplies complete cache proof. No target
-helper executes.
+helper executes. All optional-skill Git reads use the existing trusted executable
+resolver and one verified absolute host Git path, outside the target and host
+checkout. Relative/dot PATH entries, checkout binaries and symlinks into either
+checkout cannot select that executable; the isolated SDK worker revalidates it.
 
 Supported owners are the normal exact PR review (local-only or an already
 authorized hosted exact queue lease) and the existing local committed-range
@@ -76,7 +82,16 @@ key or an arbitrary environment variable. Proxy/CA egress controls are retained.
 For native Copilot, omit `provider`, use the operator-authorized native exact IDs
 (for the Scott example: `claude-opus-5.5`, `gpt-6-astra`), and supply a dedicated
 `CLAWSWEEPER_SKILL_TOKEN`. No logged-in profile or publication GitHub token is
-used for inference. The native SDK model catalog is consulted only after start.
+used for inference. Renaming a publication token does not make it a dedicated
+inference credential: selected token bytes are checked against all other
+configured environment values before local-range credential scrubbing
+and again before worker launch, excluding only the three admitted companion key
+bindings. This value-level separation covers dynamically named publication tokens
+without assuming that their names contain GitHub/GH/repository. Do not duplicate
+the inference credential under unrelated environment names. In opted-in runs the baseline reviewer receives none of the three
+companion credential variables; the isolated worker alone receives its selected
+one. Ordinary non-opted-in environments remain unchanged. The native SDK model catalog is
+consulted only after start.
 
 ```bash
 pnpm run build
@@ -162,30 +177,70 @@ Baseline and companion proof/data-model, owner/product, security/testing, labels
 options and required next steps are conservatively retained even with zero code
 findings. Existing bounded label/option/rank-up fields remain bounded; the full
 union is retained visibly in assessment/rationale rather than adding persisted
-Decision fields or silently discarding overflow. Label justifications merge by
+Decision fields or silently discarding overflow. Merge-risk options group by the
+three canonical categories: an explicit fix-before-merge recommendation survives
+either pass, while accepting risk or recommending closure needs agreement from
+both assessments. Conflicting recommendations remain unendorsed, not automated
+acceptance or closure. All option rationales remain visible. Label justifications merge by
 label identity, retaining both rationales but only the selected canonical labels;
 impact/merge-risk projections stay bounded to three labels and maturity to one.
 Merged provenance and low-value-test projections retain the canonical limits of
 eight and ten respectively. The five-owner projection always retains the
 selected required decision owner. Complete overflow stays visible in assessment
 text so the durable record remains a parser fixed point. No proof or owner decision is
-waived by coordinator confidence. Old records need no migration.
+waived by coordinator confidence. Work recommendations are deny-wins in both
+orders: `none` or `manual_review` cannot be promoted by another `queue_fix_pr`,
+and typed owner/product/security blockers withhold runnable queued work even
+when both work recommendations are optimistic. Inactive work prompts, files,
+validation and cluster references are cleared from the runnable projection,
+while both complete proposals and rationales remain visible in assessment text.
+Work confidence cannot increase; implementation complexity and reproduction
+certainty are combined conservatively, and `strict_bug` cannot survive another
+assessment's automation veto. Incomplete companion work also withholds automatic
+plans. Existing dashboard/work-plan policy owners consume the reconciled fields;
+no queue control or intent classifier is added. Any explicit security item
+category survives reconciliation in either order, even if that assessment's
+security disposition is cleared, so the existing security-label owner still
+receives the category. Companion regression assessments and a unique unverified
+provenance pointer also survive for the existing host verifier; conflicting
+pointers withhold predecessor attribution. Supporting-evidence projections stay
+bounded to three, with complete non-attributing evidence retained in assessment.
+AGENTS policy flags and status are reconciled together: disagreement never
+publishes an applied-policy claim when the conservative applied flag is false.
+Old records need no migration.
 
 A deadline, unavailable/mismatched model/setting, output/source budget, omitted
 union, scanner refusal or cleanup failure is explicitly **incomplete**, never
-clean consensus. Every session close and global shutdown is attempted; an abort,
-disconnect or stop error prevents completion. A pre-existing primary failure
+clean consensus. Source reload/scanning and model work share the worker
+absolute deadline; preflight time is not granted again to model calls. Output-limit
+abort promises are handled immediately and settled by owned session cleanup,
+including synchronous or asynchronous abort refusals. Both independent reviewer tasks settle before ordinary teardown;
+in-flight SDK startup/session acquisitions remain owned through deadline cleanup
+so late sessions join the same awaited close inventory. The managed outer process
+still bounds stuck SDK calls. Every session close and global shutdown is attempted; an abort,
+disconnect or stop error prevents completion. A graceful SDK stop that returns
+errors or rejects always triggers a force-stop attempt; a force-stop refusal
+does not replace the original failure or permit a clean result. A pre-existing primary failure
 keeps its identity/phase, with cleanup failures recorded separately. Baseline
 evidence remains available. Companion-only scanner refusal/unavailability also
 retains that baseline as an incomplete stored report, with a fresh sanitized
 `AgentInputScanError` reason for existing terminal/retry classification; the
 ordinary baseline scanner behavior is unchanged. Raw Git timeout/failure/overflow
-results are never treated as successful empty lookups or deletions. Failure
+results are never treated as successful empty lookups or deletions. Tool-returned
+source listings, including unchanged names, pass the same scanner and cumulative
+source-read budget as file content before any text reaches inference. Failure
 reports expose only fixed execution phases,
 whitelisted host-parser field names and bounded config-bound model/setting/usage
 match summaries, never raw SDK/provider messages or model output. New host-owned review leases include the baseline, configured companion, source
 preparation and supervisor/cleanup budgets. At launch, hosted execution requires
-a verified current owned lease expiry; baseline/source/companion work is capped
+a verified current owned lease expiry. After baseline and source preparation,
+the host rereads the live head, comment-lease election and exact-queue/source
+authority immediately before paid companion launch. PR queue claims must carry
+the exact source head; an unbound claim is refused. This applies to both acquired and
+supplied leases. Lost ownership/head drift cancels only the companion; unavailable
+authority is retryable incomplete work with the baseline retained. Only fixed
+diagnostics cross into the report; no GitHub credentials or host callback enter
+the inference worker. Baseline/source/companion work is capped
 to its remaining time with a shutdown/supervision reserve. A supplied lease is
 never silently extended: exhausted remaining time produces incomplete work
 instead of running beyond ownership. Ordinary and local-only defaults are

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { AgentInputScanError } from "../dist/agent-input-scan.js";
+import { AgentInputScanError, trustedReviewGitExecutable } from "../dist/agent-input-scan.js";
 import { writeExactReviewFailureDiagnostics } from "../dist/clawsweeper-review-failure-diagnostics.js";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
@@ -11,9 +11,17 @@ import {
   configureReviewOutputItems,
 } from "../dist/review-output-policy.js";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import test from "node:test";
 import { parseArgs } from "../dist/clawsweeper-args.js";
 import {
@@ -38,6 +46,8 @@ import {
   preparePinnedReviewSkill,
   preparedSkillSourceDigest,
   skillPatchBase,
+  decodeSkillUtf8,
+  scanSkillSourceListing,
 } from "../dist/review-skill-source.js";
 import { shouldReviewItem, reviewContentCacheHit } from "../dist/scheduler-policy.js";
 import { createReviewPlanningInventory } from "../dist/clawsweeper-review-planning-inventory.js";
@@ -51,19 +61,30 @@ import {
   reviewExecutionModel,
   reviewExecutionCacheCompatible,
 } from "../dist/clawsweeper-review-policy-hash.js";
-import { combineSkillAssessment } from "../dist/review-skill-combine.js";
+import { wantedIssueAdvisoryLabels } from "../dist/clawsweeper-label-selection.js";
+import { workStatusForDecision } from "../dist/clawsweeper-dashboard.js";
+import { shouldRenderWorkPlanFromReport } from "../dist/clawsweeper-label-presentation.js";
+import { renderWorkPlanFromReport } from "../dist/clawsweeper-report-context.js";
+import { frontMatterValue } from "../dist/report-front-matter.js";
+import { prStatusLabelKind } from "../dist/clawsweeper-label-policy.js";
+import { createPullRequestClosePromotion } from "../dist/clawsweeper-close-promotion.js";
+import { readReviewGit } from "../dist/pr-review-evidence.js";
+import { combineSkillAssessment, incompleteSkillAssessment } from "../dist/review-skill-combine.js";
 import { reviewDecisionParser } from "../dist/clawsweeper-decision-parser.js";
 import {
   executeReviewSkill,
   reconcileSkill,
   parseSkillReviewer,
   closeReviewSkillSession,
+  stopReviewSkillClient,
+  requestReviewSkillAbort,
   reviewSkillSourcePermission,
   skillResponseSchema,
   decodeSkillWire,
 } from "../dist/review-skill-runtime.js";
 import {
   ReviewSkillProcessError,
+  ReviewSkillAuthorityError,
   sanitizeSkillDiagnostic,
   type SkillRunDiagnostic,
 } from "../dist/review-skill-diagnostics.js";
@@ -547,6 +568,19 @@ test("normal prepared exact entrypoint retains baseline and runs explicit compan
   const baseline = decision({ reviewFindings: [finding({ title: "Baseline obligation" })] });
   baseline.localCheckoutAccess = "verified";
   const companion = decision({
+    itemCategory: "regression",
+    regressionAssessment: {
+      confidence: "probable",
+      supportingEvidence: ["reviewed_change", "reproduction"],
+    },
+    regressionProvenance: {
+      repo: "owner/repo",
+      pullRequestNumber: 44,
+      pullRequestUrl: "https://github.com/owner/repo/pull/44",
+      mergeCommitSha: base,
+      sourcePath: "source.ts",
+      sourceLine: 1,
+    },
     nextStep: { kind: "required", text: "Provide runtime proof." },
     realBehaviorProof: {
       status: "missing",
@@ -581,6 +615,7 @@ test("normal prepared exact entrypoint retains baseline and runs explicit compan
     sandboxMode: "read-only",
     localOnly: true,
     localRange: false,
+    revalidateReviewSkillAuthority: () => Date.now() + 60_000,
     reviewOpenclawDir: f.cwd,
     reviewTreesDir: join(root, "trees"),
     additionalPrompt: "",
@@ -603,6 +638,7 @@ test("normal prepared exact entrypoint retains baseline and runs explicit compan
   let launches = 0;
   let fail = false;
   let baselineCalls = 0;
+  const regressionCandidates: unknown[] = [];
   let scanReason: string | undefined;
   let baselineScanFailure = false;
   let baselineTimeout = 0;
@@ -617,6 +653,8 @@ test("normal prepared exact entrypoint retains baseline and runs explicit compan
       launches++;
       const workerOptions = JSON.parse(readFileSync(args[1], "utf8"));
       const input = JSON.parse(options.input);
+      assert.ok(!Object.hasOwn(input, "revalidateReviewSkillAuthority"));
+      assert.ok(input.gitExecutable);
       companionInput = input;
       companionTimeout = input.selection.config.timeoutMs;
       const receipt = {
@@ -660,11 +698,20 @@ test("normal prepared exact entrypoint retains baseline and runs explicit compan
     if (oldToken === undefined) delete process.env.CLAWSWEEPER_SKILL_TOKEN;
     else process.env.CLAWSWEEPER_SKILL_TOKEN = oldToken;
   });
+  const baselineEnvironments: NodeJS.ProcessEnv[] = [];
+  const originalReviewEnv = {
+    PATH: process.env.PATH,
+    CLAWSWEEPER_SKILL_TOKEN: "baseline-fixture-token",
+    CLAWSWEEPER_SKILL_API_KEY: "baseline-fixture-api-key",
+    OPENROUTER_API_KEY: "baseline-fixture-openrouter-key",
+    BASELINE_CONTROL: "preserved",
+  };
   const dependencies = {
     buildReviewPrompt: () => ({ text: "Identical baseline pinned context", telemetry: {} }),
-    reviewEnvironment: () => ({}),
+    reviewEnvironment: () => originalReviewEnv,
     itemSnapshotHash: () => "fixture",
     runCodex: (options) => {
+      baselineEnvironments.push(options.reviewEnv);
       baselineCalls++;
       if (baselineScanFailure) throw new AgentInputScanError("findings");
       baselineTimeout = options.timeoutMs;
@@ -674,7 +721,10 @@ test("normal prepared exact entrypoint retains baseline and runs explicit compan
     codexReviewFailure: () => ({ decision: baseline, logKind: "codex-failed" }),
     codexReviewFailureRetryable: () => false,
     attachFixedPullRequest: (d) => d,
-    verifyRegressionProvenance: (d) => d,
+    verifyRegressionProvenance: (d) => {
+      regressionCandidates.push(d.regressionProvenance);
+      return d;
+    },
     displayPath: (p) => p,
     displayDurationMs: () => "1s",
   };
@@ -692,9 +742,33 @@ test("normal prepared exact entrypoint retains baseline and runs explicit compan
   assert.equal(run(false).decision, baseline);
   assert.equal(launches, 0, "ordinary review never launches optional worker");
   const completed = run(true);
+  assert.deepEqual(baselineEnvironments[0], originalReviewEnv, "ordinary baseline is unchanged");
+  const stripped = baselineEnvironments[1]!;
+  for (const key of [
+    "CLAWSWEEPER_SKILL_TOKEN",
+    "CLAWSWEEPER_SKILL_API_KEY",
+    "OPENROUTER_API_KEY",
+  ]) {
+    assert.equal(stripped[key], undefined);
+    assert.ok(originalReviewEnv[key], "host environment stays available to the worker");
+  }
+  assert.equal(stripped.BASELINE_CONTROL, "preserved");
+  const nativeBaseline = execFileSync(
+    process.execPath,
+    [
+      "-e",
+      'console.log(JSON.stringify(["CLAWSWEEPER_SKILL_TOKEN","CLAWSWEEPER_SKILL_API_KEY","OPENROUTER_API_KEY"].map(key=>Object.hasOwn(process.env,key))))',
+    ],
+    { env: stripped, encoding: "utf8" },
+  );
+  assert.deepEqual(JSON.parse(nativeBaseline), [false, false, false]);
+  assert.equal(process.env.CLAWSWEEPER_SKILL_TOKEN, "fixture-not-a-real-token");
   assert.equal(launches, 1);
   assert.equal(completed.decision.reviewFindings[0]!.title, "Baseline obligation");
   assert.equal(completed.decision.realBehaviorProof.status, "missing");
+  assert.equal(completed.decision.itemCategory, "regression");
+  assert.deepEqual(regressionCandidates.at(-1), companion.regressionProvenance);
+  assert.deepEqual(completed.decision.regressionAssessment, companion.regressionAssessment);
   assert.equal(completed.decision.nextStep?.kind, "required");
   assert.match(completed.decision.solutionAssessment, /Host-supervised review skill: complete/);
   const clockStart = Date.now();
@@ -737,6 +811,30 @@ test("normal prepared exact entrypoint retains baseline and runs explicit compan
   assert.equal(companionInput!.baseSha, base);
   assert.equal(companionInput!.skill.revision, skill.revision);
   assert.ok(!companionInput!.evidence.includes("Pinned head source: upstream-only.ts"));
+  for (const change of ["head", "deleted-comment", "election", "queue-lost", "refused"]) {
+    const priorLaunches = launches;
+    let state = "current";
+    let authorityChecks = 0;
+    advanceBaseline = () => {
+      state = change;
+    };
+    const rejected = run(true, {
+      localOnly: false,
+      reviewSkillDeadlineAt: Date.now() + 60_000,
+      revalidateReviewSkillAuthority: () => {
+        authorityChecks++;
+        assert.equal(state, change, "live mutation happened during baseline before revalidation");
+        throw new ReviewSkillAuthorityError(change !== "refused");
+      },
+    });
+    assert.equal(authorityChecks, 1);
+    assert.equal(launches, priorLaunches);
+    assert.ok(rejected.codexFailure);
+    assert.equal(rejected.codexFailureRetryable, change === "refused");
+    assert.equal(rejected.decision.reviewFindings[0]!.title, "Baseline obligation");
+    assertDecisionRecordRoundtrip(rejected.decision);
+  }
+  advanceBaseline = undefined;
   const sourceRefused = preparePinnedReviewSkill(f.cwd, "0".repeat(40), {
     slug: skill.slug,
     config: config(),
@@ -1181,7 +1279,7 @@ test("one compact native wire schema applies to every model/role and keeps canon
     }),
   );
   assert.notEqual(skillExecutionIdentity(selection, "content"), previous);
-  assert.match(REVIEW_SKILL_RUNNER_VERSION, /v4/);
+  assert.equal(REVIEW_SKILL_RUNNER_VERSION, "target-owned-dual-review-v12-deadline-abort-policy");
   assert.equal(REVIEW_SKILL_WIRE_VERSION, "json-string-payload-v1");
 });
 
@@ -2015,7 +2113,11 @@ test("failed timeout or overflow head lookup cannot masquerade as deletion evide
   const original = childProcess.spawnSync;
   let failure = "command";
   t.mock.method(childProcess, "spawnSync", (command, args, options) => {
-    if (command === "git" && args.includes("ls-tree") && args.at(-1) === "source.ts")
+    if (
+      command === trustedReviewGitExecutable(f.cwd) &&
+      args.includes("ls-tree") &&
+      args.at(-1) === "source.ts"
+    )
       return {
         status: failure === "command" ? 1 : 0,
         signal: null,
@@ -2126,4 +2228,892 @@ test("preparation carries safe missing escaping binary and oversized source fail
       prepared.cleanupReviewOutput();
     }
   }
+});
+
+function queueDecision(overrides = {}) {
+  return decision({
+    workCandidate: "queue_fix_pr",
+    workConfidence: "high",
+    workPriority: "high",
+    workReason: "Focused automatic repair.",
+    workPrompt: "Implement the narrowly scoped repair.",
+    workValidation: ["pnpm run check"],
+    workLikelyFiles: ["source.ts"],
+    workClusterRefs: ["https://github.com/owner/repo/issues/1"],
+    autoImplementationCandidate: "strict_bug",
+    implementationComplexity: "small",
+    reproductionStatus: "reproduced",
+    reproductionConfidence: "high",
+    ...overrides,
+  });
+}
+function workReport(value: ReturnType<typeof decision>) {
+  value.localCheckoutAccess = "verified";
+  return markdownFor({
+    item: item({ repo: "owner/repo", kind: "pull_request", number: 1 }),
+    decision: value,
+    context: { issue: {}, comments: [], timeline: [] },
+    git: { mainSha: "a".repeat(40), latestRelease: null, releaseStateComplete: true },
+    action: { actionTaken: "kept_open" },
+    reviewMode: "propose",
+    snapshotHash: "snapshot",
+    contentDigest: "content",
+    reviewPolicy: "policy",
+    runtime: { model: "Codex", reasoningEffort: "high" },
+  } as Parameters<typeof markdownFor>[0]);
+}
+test("work routing is deny-wins in both orders and canonical reports cannot retain a vetoed runnable work plan", () => {
+  const queued = queueDecision();
+  const positive = combineSkillAssessment(
+    queued,
+    queueDecision({
+      workValidation: ["pnpm run build"],
+      workLikelyFiles: ["other.ts"],
+      workClusterRefs: ["https://github.com/owner/repo/issues/2"],
+      workPrompt: "Complementary safe repair.",
+    }),
+  );
+  assert.deepEqual(positive.workValidation, ["pnpm run check", "pnpm run build"]);
+  assert.deepEqual(positive.workLikelyFiles, ["source.ts", "other.ts"]);
+  assert.equal(positive.workClusterRefs.length, 2);
+  assert.match(positive.workPrompt, /Complementary safe repair/);
+  const unfinished = incompleteSkillAssessment(queued, "companion refused");
+  assert.equal(unfinished.workCandidate, "manual_review");
+  assert.equal(unfinished.autoImplementationCandidate, "none");
+  assert.equal(unfinished.workPrompt, "");
+  assertDecisionRecordRoundtrip(unfinished);
+  assert.equal(renderWorkPlanFromReport(workReport(unfinished)), null);
+  assert.equal(positive.workCandidate, "queue_fix_pr");
+  assert.equal(positive.autoImplementationCandidate, "strict_bug");
+  assert.equal(shouldRenderWorkPlanFromReport(workReport(positive)), true);
+  assert.ok(renderWorkPlanFromReport(workReport(positive)));
+  for (const veto of ["manual_review", "none"] as const) {
+    const restricted = queueDecision({
+      workCandidate: veto,
+      workConfidence: "medium",
+      workPriority: "low",
+      workReason: "Companion requires human inspection.",
+      workPrompt: "Manual-only investigation proposal.",
+      workValidation: ["Manual source comparison"],
+      workLikelyFiles: ["auth.ts"],
+      workClusterRefs: ["https://github.com/owner/repo/issues/2"],
+      autoImplementationCandidate: "none",
+      implementationComplexity: "unclear",
+      reproductionStatus: "unclear",
+      reproductionConfidence: "low",
+    });
+    for (const [left, right] of [
+      [queued, restricted],
+      [restricted, queued],
+    ]) {
+      const combined = combineSkillAssessment(left!, right!);
+      assert.equal(combined.workCandidate, veto);
+      assert.equal(combined.workConfidence, "medium");
+      assert.equal(combined.workPriority, "high");
+      assert.equal(combined.autoImplementationCandidate, "none");
+      assert.equal(combined.implementationComplexity, "unclear");
+      assert.equal(combined.reproductionStatus, "unclear");
+      assert.equal(combined.reproductionConfidence, "low");
+      assert.equal(combined.workPrompt, "");
+      assert.deepEqual(combined.workValidation, []);
+      assert.deepEqual(combined.workLikelyFiles, []);
+      assert.deepEqual(combined.workClusterRefs, []);
+      assert.match(combined.workReason, /Focused automatic repair/);
+      assert.match(combined.workReason, /human inspection/);
+      assert.match(combined.solutionAssessment, /Manual-only investigation proposal/);
+      assert.match(combined.solutionAssessment, /Manual source comparison/);
+      assertDecisionRecordRoundtrip(combined);
+      const report = workReport(combined);
+      assert.equal(frontMatterValue(report, "work_status"), veto);
+      assert.equal(workStatusForDecision(combined), veto);
+      assert.equal(shouldRenderWorkPlanFromReport(report), false);
+      assert.equal(renderWorkPlanFromReport(report), null);
+      assert.deepEqual(readReviewRecord(report)?.decision, combined);
+    }
+  }
+});
+test("typed security product and owner blockers withhold queued work even if both independent work recommendations were optimistic", () => {
+  const owner = {
+    required: true,
+    kind: "manual_review",
+    question: "Confirm this boundary?",
+    rationale: "Human owner must decide.",
+    options: [
+      { title: "Hold", body: "Inspect first.", recommended: true },
+      { title: "Accept", body: "Accept after inspection.", recommended: false },
+    ],
+    likelyOwner: { person: "@alice", reason: "Current owner.", confidence: "high" },
+  };
+  const blockers = [
+    {
+      securityReview: {
+        status: "needs_attention",
+        summary: "Security review required.",
+        concerns: [],
+      },
+    },
+    { requiresProductDecision: true },
+    {
+      productReview: {
+        ...queueDecision().productReview,
+        worthIt: "needs_maintainer",
+        reason: "Product direction needed.",
+      },
+    },
+    { maintainerDecision: owner },
+  ];
+  const hostAssessment = (blocker: object) => {
+    const assessed = queueDecision(blocker);
+    if (assessed.maintainerDecision.required)
+      assessed.maintainerDecision.likelyOwner = { ...owner.likelyOwner };
+    return assessed;
+  };
+  for (const blocker of blockers)
+    for (const [left, right] of [
+      [queueDecision(), hostAssessment(blocker)],
+      [hostAssessment(blocker), queueDecision()],
+    ]) {
+      const combined = combineSkillAssessment(left!, right!);
+      assert.equal(combined.workCandidate, "manual_review");
+      assert.equal(combined.autoImplementationCandidate, "none");
+      assert.equal(combined.workPrompt, "");
+      assertDecisionRecordRoundtrip(combined);
+      assert.equal(renderWorkPlanFromReport(workReport(combined)), null);
+    }
+  for (const downgrade of [
+    { autoImplementationCandidate: "none" },
+    { implementationComplexity: "large" },
+    { implementationComplexity: "not_applicable" },
+    { reproductionConfidence: "medium" },
+    { reproductionStatus: "not_reproduced" },
+    { requiresNewFeature: true },
+    { requiresNewConfigOption: true },
+  ])
+    for (const [left, right] of [
+      [queueDecision(), queueDecision(downgrade)],
+      [queueDecision(downgrade), queueDecision()],
+    ])
+      assert.equal(combineSkillAssessment(left!, right!).autoImplementationCandidate, "none");
+});
+test("lossless UTF-8 decoder rejects invalid Git text/path bytes before lookup while valid empty and replacement-character text stay exact", (t) => {
+  assert.equal(decodeSkillUtf8(Buffer.alloc(0)), "");
+  assert.equal(decodeSkillUtf8(Buffer.from("valid 雪\0path.ts\0")), "valid 雪\0path.ts\0");
+  assert.equal(decodeSkillUtf8(Buffer.from("\ufffd")), "\ufffd");
+  for (const bytes of [[0xff], [0xc3, 0x28], [0xe2, 0x82]])
+    assert.throws(() => decodeSkillUtf8(Buffer.from(bytes)), /lossless UTF-8/);
+  const f = fixture(t);
+  f.put("source.ts", "old");
+  const base = f.commit();
+  f.put("source.ts", "new");
+  const head = f.commit();
+  let lookedUp = false;
+  const original = childProcess.spawnSync;
+  t.mock.method(childProcess, "spawnSync", (command, args, options) => {
+    if (
+      command === trustedReviewGitExecutable(f.cwd) &&
+      args.includes("diff") &&
+      args.includes("--name-only")
+    )
+      return { status: 0, stdout: Buffer.from([0x62, 0x61, 0x64, 0xff, 0x00]), signal: null };
+    if (command === trustedReviewGitExecutable(f.cwd) && args.includes("ls-tree")) lookedUp = true;
+    return original(command, args, options);
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  assert.throws(() => pinnedSkillEvidence(f.cwd, head, base, Date.now() + 1000), /lossless UTF-8/);
+  assert.equal(
+    lookedUp,
+    false,
+    "no replacement-character path can be queried or misreported as deleted",
+  );
+});
+test(
+  "real non-UTF-8 Git filename fails changed inventory and raw NUL source listing",
+  {
+    skip:
+      process.platform === "win32"
+        ? "Windows paths cannot represent this POSIX invalid-byte fixture"
+        : false,
+  },
+  (t) => {
+    const f = fixture(t);
+    f.put("source.ts", "unchanged");
+    const base = f.commit();
+    const invalid = Buffer.concat([
+      Buffer.from(f.cwd + "/bad-"),
+      Buffer.from([0xff]),
+      Buffer.from(".ts"),
+    ]);
+    writeFileSync(invalid, "new file");
+    const head = f.commit();
+    assert.throws(
+      () => pinnedSkillEvidence(f.cwd, head, base, Date.now() + 1000),
+      /lossless UTF-8/,
+    );
+    const raw = readReviewGit(f.cwd, ["ls-tree", "-r", "--name-only", "-z", head, "--"], {
+      deadlineAt: Date.now() + 1000,
+      maxBytes: 65536,
+    });
+    assert.ok(raw);
+    assert.throws(
+      () => decodeSkillUtf8(raw),
+      /lossless UTF-8/,
+      "SDK source listing uses this exact raw framing and shared decoder",
+    );
+  },
+);
+
+test("skill Git readers never execute dot target-bin or symlinked target Git and accept only host absolute Git", (t) => {
+  const f = fixture(t);
+  f.put(".agents/skills/fixture-review/SKILL.md", "Full trusted skill.");
+  f.put("source.ts", "base");
+  const base = f.commit();
+  f.put("source.ts", "head");
+  const head = f.commit();
+  const hostGit = trustedReviewGitExecutable(f.cwd);
+  const originalPath = process.env.PATH;
+  t.after(() => {
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+  });
+  const marker = join(f.root, "executed-target-git");
+  const name = process.platform === "win32" ? "git.exe" : "git";
+  const fake = join(f.cwd, name);
+  const bin = join(f.cwd, "bin");
+  mkdirSync(bin);
+  const script =
+    "#!" +
+    process.execPath +
+    '\nrequire("node:fs").writeFileSync(' +
+    JSON.stringify(marker) +
+    ',"executed");process.exit(99);\n';
+  writeFileSync(fake, script, { mode: 0o755 });
+  writeFileSync(join(bin, name), script, { mode: 0o755 });
+  const linkdir = join(f.root, "host-looking-alias");
+  mkdirSync(linkdir);
+  let linked = false;
+  try {
+    symlinkSync(fake, join(linkdir, name));
+    linked = true;
+  } catch (error) {
+    if (process.platform !== "win32") throw error;
+  }
+  for (const badPath of [".", bin, ...(linked ? [linkdir] : [])]) {
+    process.env.PATH = badPath;
+    assert.throws(() => trustedReviewGitExecutable(f.cwd));
+    assert.throws(() => loadPinnedReviewSkill(f.cwd, base, "fixture-review"));
+    assert.equal(existsSync(marker), false);
+  }
+  process.env.PATH = [".", bin, ...(linked ? [linkdir] : []), originalPath ?? ""].join(delimiter);
+  assert.equal(trustedReviewGitExecutable(f.cwd), hostGit);
+  assert.equal(trustedReviewGitExecutable(f.cwd, hostGit), hostGit);
+  assert.throws(() => trustedReviewGitExecutable(f.cwd, "git"));
+  assert.throws(() => trustedReviewGitExecutable(f.cwd, fake));
+  if (linked) assert.throws(() => trustedReviewGitExecutable(f.cwd, join(linkdir, name)));
+  assert.equal(loadPinnedReviewSkill(f.cwd, base, "fixture-review").files.length, 1);
+  assert.match(pinnedSkillEvidence(f.cwd, head, base, Date.now() + 1000, hostGit), /source.ts/);
+  assert.equal(skillPatchBase(f.cwd, base, head, false, Date.now() + 1000, hostGit), base);
+  assert.equal(readSkillBlob(f.cwd, head, "source.ts", Date.now() + 1000, hostGit), "head");
+  assert.equal(
+    verifyPinnedSkillFinding(
+      f.cwd,
+      head,
+      base,
+      finding(),
+      new Set(["head:source.ts"]),
+      Date.now() + 1000,
+      hostGit,
+    ),
+    "head",
+  );
+  assert.equal(existsSync(marker), false);
+});
+test("explicit security category survives either assessment and drives existing label selector with cleared findings", () => {
+  const ordinary = queueDecision({ itemCategory: "bug" });
+  const security = queueDecision({
+    itemCategory: "security",
+    securityReview: {
+      status: "cleared",
+      summary: "Security category reviewed; no current code concern.",
+      concerns: [],
+    },
+  });
+  for (const [left, right] of [
+    [ordinary, security],
+    [security, ordinary],
+  ]) {
+    const merged = combineSkillAssessment(left!, right!);
+    assert.equal(merged.itemCategory, "security");
+    assert.equal(merged.securityReview.status, "cleared");
+    assert.equal(merged.workCandidate, "manual_review");
+    assertDecisionRecordRoundtrip(merged);
+    const labels = wantedIssueAdvisoryLabels(
+      {
+        type: "issue",
+        itemCategory: merged.itemCategory,
+        reproductionStatus: merged.reproductionStatus,
+        reproductionConfidence: merged.reproductionConfidence,
+        requiresNewFeature: merged.requiresNewFeature,
+        requiresNewConfigOption: merged.requiresNewConfigOption,
+        requiresProductDecision: merged.requiresProductDecision,
+        implementationComplexity: merged.implementationComplexity,
+        autoImplementationCandidate: merged.autoImplementationCandidate,
+        securityReviewStatus: merged.securityReview.status,
+        workCandidate: merged.workCandidate,
+        workStatus: workStatusForDecision(merged),
+        workConfidence: merged.workConfidence,
+        hasWorkPrompt: false,
+        hasWorkValidation: false,
+        hasWorkShape: false,
+        goodFirstIssueOptedOut: false,
+        locked: false,
+        hasOpenLinkedPullRequest: false,
+      } as Parameters<typeof wantedIssueAdvisoryLabels>[0],
+      [],
+    );
+    assert.ok(labels.has("clawsweeper:needs-security-review"));
+    assert.ok(labels.has("clawsweeper:no-new-fix-pr"));
+  }
+});
+
+test("SDK graceful shutdown success does not force-stop", async () => {
+  const calls: string[] = [];
+  await stopReviewSkillClient({
+    stop: async () => {
+      calls.push("stop");
+      return [];
+    },
+    forceStop: async () => {
+      calls.push("force");
+    },
+  });
+  assert.deepEqual(calls, ["stop"]);
+});
+
+for (const mode of ["errors", "sync", "async"] as const) {
+  for (const forceFails of [false, true]) {
+    test(
+      "SDK shutdown " +
+        mode +
+        " forces cleanup and retains original failure, forceFails=" +
+        forceFails,
+      async () => {
+        const calls: string[] = [];
+        const primary = new Error("graceful shutdown refused");
+        await assert.rejects(
+          stopReviewSkillClient({
+            stop: () => {
+              calls.push("stop");
+              if (mode === "sync") throw primary;
+              if (mode === "async") return Promise.reject(primary);
+              return Promise.resolve([primary, new Error("secondary graceful failure")]);
+            },
+            forceStop: async () => {
+              calls.push("force");
+              if (forceFails) throw new Error("force shutdown refused");
+            },
+          }),
+          (error) => error === primary,
+        );
+        assert.deepEqual(calls, ["stop", "force"]);
+      },
+    );
+  }
+}
+
+test("SDK graceful rejection prevents a clean runtime receipt even when force-stop succeeds", async () => {
+  const t = transport();
+  const primary = new Error("SDK graceful failure");
+  const diagnostic: SkillRunDiagnostic = { phase: "source", sessions: [] };
+  t.api.stop = () =>
+    stopReviewSkillClient({
+      stop: async () => {
+        t.events.push("stop");
+        throw primary;
+      },
+      forceStop: async () => {
+        t.events.push("force");
+      },
+    });
+  await assert.rejects(
+    executeReviewSkill(input(), t.api, diagnostic),
+    (error) => error === primary,
+  );
+  assert.deepEqual(t.closed.sort(), ["coordinator", "reviewer-0", "reviewer-1"]);
+  assert.deepEqual(t.events.slice(-2), ["stop", "force"]);
+  assert.equal(diagnostic.phase, "cleanup");
+  assert.deepEqual(diagnostic.cleanup, { sessionFailures: 0, shutdownFailed: true });
+});
+
+test("local-range rejects selected publication-credential aliases before scrubbing or target preparation", (t) => {
+  const f = fixture(t);
+  const host = join(f.root, "operator.json");
+  const oldEnv = process.env;
+  t.after(() => {
+    process.env = oldEnv;
+  });
+  let preparations = 0;
+  const dependencies = {
+    repoFromArgs: () => repositoryProfileFor("openclaw/clawsweeper"),
+    targetRepo: () => "openclaw/clawsweeper",
+    buildLocalRangeReview: () => {
+      preparations++;
+      throw new Error("Unexpected target preparation");
+    },
+  };
+  for (const selected of [
+    "CLAWSWEEPER_SKILL_TOKEN",
+    "CLAWSWEEPER_SKILL_API_KEY",
+    "OPENROUTER_API_KEY",
+  ] as const) {
+    const selectedConfig = config();
+    if (selected !== "CLAWSWEEPER_SKILL_TOKEN") {
+      selectedConfig.provider = { baseUrl: "https://example.invalid/v1", apiKeyEnv: selected };
+    }
+    writeFileSync(host, JSON.stringify(selectedConfig));
+    for (const publication of ["GH_TOKEN", "GITHUB_TOKEN", "CLAWSWEEPER_PROOF_INSPECTION_TOKEN"]) {
+      process.env = { ...oldEnv, [selected]: "alias-fixture", [publication]: "alias-fixture" };
+      assert.throws(
+        () =>
+          prepareReviewCommand(
+            parseArgs([
+              "--local-range",
+              "--target-dir",
+              f.cwd,
+              "--review-skill",
+              "fixture-review",
+              "--review-skill-config",
+              host,
+            ]),
+            dependencies as unknown as Parameters<typeof prepareReviewCommand>[1],
+          ),
+        (error: Error) => {
+          assert.equal(
+            error.message,
+            "Review skill incomplete: inference requires a separate credential from publication.",
+          );
+          return true;
+        },
+      );
+      assert.equal(
+        process.env[publication],
+        "alias-fixture",
+        "guard runs before local-range scrub",
+      );
+    }
+  }
+  assert.equal(preparations, 0);
+});
+
+test("merge-risk reconciliation preserves required fixes and prevents conflicting accept/close routing in either order", () => {
+  type Category = "fix_before_merge" | "accept_risk" | "pause_or_close";
+  const assess = (category: Category, suffix: string) =>
+    decision({
+      mergeRiskLabels: ["merge-risk: 🚨 security-boundary"],
+      risks: ["Unresolved security boundary."],
+      labelJustifications: [
+        { label: "P2", reason: "Bounded severity." },
+        { label: "merge-risk: 🚨 security-boundary", reason: "Unresolved security boundary." },
+      ],
+      securityReview: {
+        status: "needs_attention",
+        summary: "Boundary requires review.",
+        concerns: [],
+      },
+      mergeRiskOptions: ["fix_before_merge", "accept_risk", "pause_or_close"].map((value) => ({
+        category: value,
+        recommended: value === category,
+        title: value + " " + suffix,
+        body: "Rationale " + value + " " + suffix,
+      })),
+    });
+  const status = (value: ReturnType<typeof decision>) =>
+    prStatusLabelKind({
+      reviewFailed: false,
+      proofPolicy: { blocksMerge: false, needsContributorAction: false },
+      beforeMergeItems: [],
+      securityReview: value.securityReview,
+      mergeRiskOptions: value.mergeRiskOptions,
+      hasRepairLoopPauseLabel: false,
+      hasRecentReReviewRequest: false,
+      hasRecentAuthorActivity: false,
+    });
+  const subject = item({
+    repo: "owner/repo",
+    kind: "pull_request",
+    number: 1,
+    createdAt: "2020-01-01T00:00:00Z",
+  });
+  const context = { issue: {}, comments: [], timeline: [] };
+  const promote = createPullRequestClosePromotion(() => {
+    throw new Error("Unexpected GitHub head query");
+  }).pullRequestClosePromotion;
+  const close = assess("pause_or_close", "baseline");
+  assert.ok(
+    promote(workReport(close), subject, context, 30),
+    "positive control: existing close policy consumes recommended close option",
+  );
+  assert.equal(status(assess("accept_risk", "baseline")), "ready_for_maintainer_look");
+  for (const category of ["accept_risk", "pause_or_close"] as const) {
+    for (const [left, right] of [
+      [assess(category, "baseline"), assess("fix_before_merge", "companion")],
+      [assess("fix_before_merge", "companion"), assess(category, "baseline")],
+    ]) {
+      const combined = combineSkillAssessment(left!, right!);
+      assert.equal(combined.mergeRiskOptions.length, 3);
+      assert.equal(
+        combined.mergeRiskOptions.find((option) => option.recommended)?.category,
+        "fix_before_merge",
+      );
+      for (const option of combined.mergeRiskOptions) {
+        assert.match(option.body, /baseline/);
+        assert.match(option.body, /companion/);
+      }
+      assertDecisionRecordRoundtrip(combined);
+      const report = workReport(combined);
+      assert.deepEqual(readReviewRecord(report)?.decision, combined);
+      assert.equal(status(combined), "waiting_on_author");
+      assert.equal(promote(report, subject, context, 30), null);
+    }
+  }
+  for (const category of ["accept_risk", "pause_or_close"] as const) {
+    const agreed = combineSkillAssessment(assess(category, "first"), assess(category, "second"));
+    assert.equal(agreed.mergeRiskOptions.find((option) => option.recommended)?.category, category);
+    assertDecisionRecordRoundtrip(agreed);
+    const disputed = combineSkillAssessment(assess(category, "first"), decision());
+    assert.equal(
+      disputed.mergeRiskOptions.some((option) => option.recommended),
+      false,
+    );
+    assertDecisionRecordRoundtrip(disputed);
+  }
+  const conflicting = combineSkillAssessment(
+    assess("accept_risk", "first"),
+    assess("pause_or_close", "second"),
+  );
+  assert.equal(
+    conflicting.mergeRiskOptions.some((option) => option.recommended),
+    false,
+  );
+  assert.equal(status(conflicting), "waiting_on_author");
+  assert.equal(promote(workReport(conflicting), subject, context, 30), null);
+  assertDecisionRecordRoundtrip(conflicting);
+});
+
+for (const deadline of [false, true]) {
+  test(
+    "delayed reviewer creation is owned and closed before global shutdown, deadline=" + deadline,
+    async () => {
+      const t = transport();
+      const original = t.api.create;
+      const primary = new Error("first reviewer failed");
+      let resolveCreate: () => void = () => {
+        throw new Error("create not started");
+      };
+      const delayed = new Promise<void>((resolve) => {
+        resolveCreate = resolve;
+      });
+      let pending = true;
+      t.api.create = async (model, role) => {
+        if (role === "reviewer-1") await delayed;
+        const session = await original(model, role);
+        return {
+          ...session,
+          send: async () => {
+            if (role === "reviewer-0") throw primary;
+            return JSON.stringify(review());
+          },
+          close: async () => {
+            await session.close();
+            if (role === "reviewer-1") throw new Error("late close refusal");
+          },
+        };
+      };
+      const request = input();
+      if (deadline) request.selection.config.timeoutMs = 20;
+      const diagnostic: SkillRunDiagnostic = { phase: "startup", sessions: [] };
+      const result = executeReviewSkill(request, t.api, diagnostic).finally(() => {
+        pending = false;
+      });
+      const assertion = assert.rejects(result, (error) =>
+        deadline ? /deadline/.test(String(error)) : error === primary,
+      );
+      await new Promise((resolve) => setTimeout(resolve, deadline ? 40 : 5));
+      assert.equal(
+        pending,
+        true,
+        "run must not escape while a resource acquisition is outstanding",
+      );
+      assert.equal(t.events.includes("stop"), false);
+      resolveCreate();
+      await assertion;
+      assert.deepEqual(t.closed.sort(), ["reviewer-0", "reviewer-1"]);
+      assert.equal(t.events.at(-1), "stop");
+      assert.deepEqual(diagnostic.cleanup, { sessionFailures: 1, shutdownFailed: false });
+      assert.ok(!t.events.includes("create:coordinator"));
+    },
+  );
+}
+
+test("late SDK startup settles before global shutdown after deadline", async () => {
+  const t = transport();
+  let finish: () => void = () => {};
+  t.api.start = () =>
+    new Promise<void>((resolve) => {
+      finish = () => {
+        t.events.push("start-settled");
+        resolve();
+      };
+    });
+  const request = input();
+  request.selection.config.timeoutMs = 20;
+  const result = assert.rejects(executeReviewSkill(request, t.api), /deadline/);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(t.events.includes("stop"), false);
+  finish();
+  await result;
+  assert.deepEqual(t.events, ["start-settled", "stop"]);
+});
+
+test("companion regression metadata survives either order without publishing unverified predecessor blame", () => {
+  const ordinary = decision({ itemCategory: "bug" });
+  const candidate = {
+    repo: "owner/repo",
+    pullRequestNumber: 44,
+    pullRequestUrl: "https://github.com/owner/repo/pull/44",
+    mergeCommitSha: "a".repeat(40),
+    sourcePath: "source.ts",
+    sourceLine: 1,
+  };
+  const regression = decision({
+    itemCategory: "regression",
+    regressionAssessment: {
+      confidence: "probable",
+      supportingEvidence: ["reviewed_change", "reproduction"],
+    },
+    regressionProvenance: candidate,
+  });
+  for (const [left, right] of [
+    [ordinary, regression],
+    [regression, ordinary],
+  ]) {
+    const combined = combineSkillAssessment(left!, right!);
+    assert.equal(combined.itemCategory, "regression");
+    assert.deepEqual(combined.regressionAssessment, regression.regressionAssessment);
+    assert.deepEqual(combined.regressionProvenance, candidate);
+    assert.doesNotThrow(() => reviewDecisionParser.parseDecision(combined));
+    const report = workReport(combined);
+    const comment = renderReviewCommentFromReport(report);
+    assert.doesNotMatch(comment, /pull\/44/);
+    assert.match(comment, /regression/i);
+  }
+  const conflicting = combineSkillAssessment(
+    regression,
+    decision({
+      itemCategory: "security",
+      regressionAssessment: {
+        confidence: "probable",
+        supportingEvidence: ["failure_trace", "known_regression_link"],
+      },
+      regressionProvenance: {
+        ...candidate,
+        pullRequestNumber: 45,
+        pullRequestUrl: "https://github.com/owner/repo/pull/45",
+      },
+    }),
+  );
+  assert.equal(conflicting.itemCategory, "security");
+  assert.equal(conflicting.regressionAssessment?.supportingEvidence.length, 3);
+  assert.equal(conflicting.regressionProvenance, null);
+  assert.match(conflicting.solutionAssessment, /known_regression_link/);
+  assert.match(conflicting.solutionAssessment, /Conflicting unverified/);
+  assertDecisionRecordRoundtrip(conflicting);
+});
+
+test("unchanged source-list names are scanned before tool return, with refusal identity preserved", (t) => {
+  const f = fixture(t);
+  const unchanged = "credential-like-unchanged-path.txt";
+  f.put(unchanged, "unchanged source\n");
+  f.put("changed.ts", "before\n");
+  const base = f.commit();
+  f.put("changed.ts", "after\n");
+  const head = f.commit();
+  const until = Date.now() + 5_000;
+  assert.doesNotMatch(
+    pinnedSkillEvidence(f.cwd, head, base, until),
+    /credential-like-unchanged-path/,
+  );
+  const raw = readReviewGit(f.cwd, ["ls-tree", "-r", "--name-only", "-z", head], {
+    deadlineAt: until,
+  });
+  assert.ok(raw);
+  const seen: string[] = [];
+  const result = scanSkillSourceListing(raw, (text) => {
+    seen.push(text);
+  });
+  assert.deepEqual(seen, [result]);
+  assert.match(result, /credential-like-unchanged-path/);
+  for (const reason of ["findings", "scanner_failed"] as const) {
+    const refusal = new AgentInputScanError(reason);
+    assert.throws(
+      () =>
+        scanSkillSourceListing(raw, (text) => {
+          assert.match(text, /credential-like-unchanged-path/);
+          throw refusal;
+        }),
+      (error) => error === refusal,
+    );
+  }
+  let emptyScanned = false;
+  assert.equal(
+    scanSkillSourceListing(Buffer.alloc(0), (text) => {
+      assert.equal(text, "");
+      emptyScanned = true;
+    }),
+    "",
+  );
+  assert.equal(emptyScanned, true);
+});
+
+test("worker preflight budget is not restarted by the model runtime", async () => {
+  const t = transport({ hang: true });
+  const original = t.api.create;
+  const timeouts: number[] = [];
+  t.api.create = async (model, role) => {
+    const session = await original(model, role);
+    return {
+      ...session,
+      send: (prompt, timeout) => {
+        timeouts.push(timeout);
+        return session.send(prompt, timeout);
+      },
+    };
+  };
+  const request = input();
+  const started = Date.now();
+  await assert.rejects(executeReviewSkill(request, t.api, undefined, started + 100), /deadline/);
+  assert.ok(
+    Date.now() - started < 3_000,
+    "must use remaining budget, not the configured ten seconds",
+  );
+  assert.ok(timeouts.length > 0);
+  assert.ok(timeouts.every((timeout) => timeout > 0 && timeout <= 100));
+  assert.equal(
+    request.selection.config.timeoutMs,
+    10_000,
+    "cache identity/config remain unchanged",
+  );
+  assert.equal(t.events.at(-1), "stop");
+  const expired = transport();
+  await assert.rejects(
+    executeReviewSkill(request, expired.api, undefined, Date.now() - 1),
+    /deadline/,
+  );
+  assert.deepEqual(expired.events, ["stop"], "expired preflight does not start paid SDK work");
+});
+
+test("output-limit abort rejection is immediately handled and retained through all owned cleanup", async () => {
+  const primary = new Error("output limit abort refused");
+  const calls: string[] = [];
+  const pending = requestReviewSkillAbort({
+    abort: () => {
+      calls.push("event-abort");
+      throw primary;
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  await assert.rejects(
+    closeReviewSkillSession(
+      {
+        abort: async () => {
+          calls.push("close-abort");
+          throw new Error("later abort failure");
+        },
+        disconnect: async () => {
+          calls.push("disconnect");
+          throw new Error("later disconnect failure");
+        },
+      },
+      pending,
+    ),
+    (error) => error === primary,
+  );
+  assert.deepEqual(calls, ["event-abort", "close-abort", "disconnect"]);
+  const moduleUrl = new URL("../dist/review-skill-runtime.js", import.meta.url).href;
+  const script = [
+    "import assert from 'node:assert/strict';",
+    "import {requestReviewSkillAbort,closeReviewSkillSession} from " +
+      JSON.stringify(moduleUrl) +
+      ";",
+    "const failure = new Error('controlled asynchronous refusal');",
+    "const pending = requestReviewSkillAbort({abort:async()=>{throw failure}});",
+    "await new Promise(resolve=>setTimeout(resolve,20));",
+    "let disconnected=false;",
+    "await assert.rejects(closeReviewSkillSession({abort:async()=>{},disconnect:async()=>{disconnected=true}},pending), error=>error===failure);",
+    "assert.equal(disconnected,true);",
+    "console.log('owned-cleanup-complete');",
+  ].join("\n");
+  const output = execFileSync(
+    process.execPath,
+    ["--unhandled-rejections=strict", "--input-type=module", "-e", script],
+    { encoding: "utf8" },
+  );
+  assert.equal(output.trim(), "owned-cleanup-complete");
+});
+
+test("AGENTS policy reconciliation cannot publish applied status with a conservative non-applied flag", () => {
+  const applied = {
+    found: true,
+    readFully: true,
+    applied: true,
+    status: "found_applied",
+    summary: "First policy assessment.",
+  };
+  for (const status of [
+    "found_not_applicable",
+    "not_found",
+    "unreadable_or_unclear",
+    "conflict_not_applied",
+  ]) {
+    const other = {
+      found: status !== "not_found",
+      readFully: status === "found_not_applicable",
+      applied: false,
+      status,
+      summary: "Second policy assessment.",
+    };
+    for (const [left, right] of [
+      [applied, other],
+      [other, applied],
+    ]) {
+      const combined = combineSkillAssessment(
+        decision({ agentsPolicyStatus: left }),
+        decision({ agentsPolicyStatus: right }),
+      );
+      assert.equal(combined.agentsPolicyStatus.applied, false);
+      assert.notEqual(combined.agentsPolicyStatus.status, "found_applied");
+      if (status === "conflict_not_applied")
+        assert.equal(combined.agentsPolicyStatus.status, status);
+      assertDecisionRecordRoundtrip(combined);
+      const report = workReport(combined);
+      assert.notEqual(frontMatterValue(report, "agents_policy_status"), "found_applied");
+      assert.doesNotMatch(
+        renderReviewCommentFromReport(report),
+        /AGENTS\.md: found and applied where relevant/,
+      );
+    }
+  }
+  const positive = combineSkillAssessment(
+    decision({ agentsPolicyStatus: applied }),
+    decision({ agentsPolicyStatus: applied }),
+  );
+  assert.equal(positive.agentsPolicyStatus.status, "found_applied");
+  assert.equal(positive.agentsPolicyStatus.applied, true);
+  assert.match(
+    renderReviewCommentFromReport(workReport(positive)),
+    /AGENTS\.md: found and applied where relevant/,
+  );
 });

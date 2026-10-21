@@ -1,6 +1,11 @@
 import { MAX_LOW_VALUE_TESTS, MAX_PROVENANCE_ENTRIES } from "./clawsweeper-policy.js";
 import { reviewDecisionParser } from "./clawsweeper-decision-parser.js";
-import type { LabelJustification, Decision, PrRatingTier } from "./clawsweeper-types.js";
+import type {
+  LabelJustification,
+  Decision,
+  PrRatingTier,
+  MergeRiskOption,
+} from "./clawsweeper-types.js";
 import { stableJson } from "./stable-json.js";
 
 const unique = <T>(values: T[]): T[] => [
@@ -10,6 +15,46 @@ const join = (...values: string[]) => [...new Set(values.filter(Boolean))].join(
 function worst<T extends string>(left: T, right: T, order: readonly T[]): T {
   return order.indexOf(left) >= order.indexOf(right) ? left : right;
 }
+function workAssessment(decision: Decision) {
+  return {
+    workCandidate: decision.workCandidate,
+    workConfidence: decision.workConfidence,
+    workPriority: decision.workPriority,
+    workReason: decision.workReason,
+    workPrompt: decision.workPrompt,
+    workClusterRefs: decision.workClusterRefs,
+    workValidation: decision.workValidation,
+    workLikelyFiles: decision.workLikelyFiles,
+    autoImplementationCandidate: decision.autoImplementationCandidate,
+    implementationComplexity: decision.implementationComplexity,
+    reproductionStatus: decision.reproductionStatus,
+    reproductionConfidence: decision.reproductionConfidence,
+  };
+}
+// At most one option per canonical category keeps the bounded structured view
+// complete. Explicit fix-before-merge obligations cannot be waived by another
+// pass; accepting risk or recommending closure requires agreement from both.
+function combinedMergeRiskOptions(baseline: Decision, companion: Decision): MergeRiskOption[] {
+  const left = baseline.mergeRiskOptions.find((option) => option.recommended)?.category;
+  const right = companion.mergeRiskOptions.find((option) => option.recommended)?.category;
+  const recommended =
+    left === "fix_before_merge" || right === "fix_before_merge"
+      ? "fix_before_merge"
+      : left === right
+        ? left
+        : undefined;
+  const groups = new Map<MergeRiskOption["category"], MergeRiskOption[]>();
+  for (const option of [...baseline.mergeRiskOptions, ...companion.mergeRiskOptions]) {
+    groups.set(option.category, [...(groups.get(option.category) ?? []), option]);
+  }
+  return [...groups].map(([category, options]) => ({
+    category,
+    title: [...new Set(options.map((option) => option.title))].join("; "),
+    body: join(...options.map((option) => option.body)),
+    recommended: category === recommended,
+  }));
+}
+
 // Structured obligations are not code findings. Preserve them even when both
 // reviewers return zero findings; the coordinator cannot waive another pass.
 export function combineSkillAssessment(baseline: Decision, companion: Decision): Decision {
@@ -19,6 +64,40 @@ export function combineSkillAssessment(baseline: Decision, companion: Decision):
     ...baseline.testingReview.lowValueTests,
     ...companion.testingReview.lowValueTests,
   ]);
+  const assessments = [baseline.regressionAssessment, companion.regressionAssessment].filter(
+    (value) => value != null,
+  );
+  const regressionEvidence = unique(assessments.flatMap((value) => value.supportingEvidence));
+  const regressionConflict = Boolean(
+    baseline.regressionProvenance &&
+    companion.regressionProvenance &&
+    stableJson(baseline.regressionProvenance) !== stableJson(companion.regressionProvenance),
+  );
+  const policyFound = baseline.agentsPolicyStatus.found || companion.agentsPolicyStatus.found;
+  const policyReadFully =
+    policyFound && baseline.agentsPolicyStatus.readFully && companion.agentsPolicyStatus.readFully;
+  const policyStatuses = [baseline.agentsPolicyStatus.status, companion.agentsPolicyStatus.status];
+  const policyFailure = policyStatuses.includes("conflict_not_applied")
+    ? "conflict_not_applied"
+    : policyStatuses.includes("unreadable_or_unclear")
+      ? "unreadable_or_unclear"
+      : undefined;
+  const policyApplied =
+    !policyFailure &&
+    policyReadFully &&
+    baseline.agentsPolicyStatus.applied &&
+    companion.agentsPolicyStatus.applied;
+  const policyStatus =
+    policyFailure ??
+    (!policyFound
+      ? "not_found"
+      : !policyReadFully
+        ? "unreadable_or_unclear"
+        : policyApplied
+          ? "found_applied"
+          : policyStatuses.every((status) => status === "found_not_applicable")
+            ? "found_not_applicable"
+            : "unreadable_or_unclear");
   const proof = baseline.realBehaviorProof;
   const otherProof = companion.realBehaviorProof;
   const proofStatus = worst(proof.status, otherProof.status, [
@@ -53,6 +132,56 @@ export function combineSkillAssessment(baseline: Decision, companion: Decision):
     baseline.productReview.worthIt === productWorth
       ? baseline.productReview
       : companion.productReview;
+  // Exact model decisions form a deny-wins work lattice; no prose-based intent
+  // classifier or new queue policy. Typed owner/product/security blockers use
+  // the same no-new-fix boundary as existing advisory/report consumers.
+  const workVeto = baseline.workCandidate === "none" || companion.workCandidate === "none";
+  const ownerOrSecurityBlock =
+    baseline.maintainerDecision.required ||
+    companion.maintainerDecision.required ||
+    baseline.requiresProductDecision ||
+    companion.requiresProductDecision ||
+    productWorth === "no" ||
+    productWorth === "needs_maintainer" ||
+    baseline.securityReview.status === "needs_attention" ||
+    companion.securityReview.status === "needs_attention" ||
+    baseline.itemCategory === "security" ||
+    companion.itemCategory === "security";
+  const workCandidate = workVeto
+    ? "none"
+    : ownerOrSecurityBlock ||
+        baseline.workCandidate === "manual_review" ||
+        companion.workCandidate === "manual_review"
+      ? "manual_review"
+      : "queue_fix_pr";
+  const queueable = workCandidate === "queue_fix_pr";
+  const reproductionStatus =
+    baseline.reproductionStatus === companion.reproductionStatus
+      ? baseline.reproductionStatus
+      : "unclear";
+  const reproductionConfidence = worst(
+    baseline.reproductionConfidence,
+    companion.reproductionConfidence,
+    ["high", "medium", "low"],
+  );
+  const implementationComplexity = worst(
+    baseline.implementationComplexity,
+    companion.implementationComplexity,
+    ["small", "medium", "large", "unclear", "not_applicable"],
+  );
+  const autoImplementationCandidate =
+    queueable &&
+    baseline.autoImplementationCandidate === "strict_bug" &&
+    companion.autoImplementationCandidate === "strict_bug" &&
+    !baseline.requiresNewFeature &&
+    !companion.requiresNewFeature &&
+    !baseline.requiresNewConfigOption &&
+    !companion.requiresNewConfigOption &&
+    reproductionStatus === "reproduced" &&
+    reproductionConfidence === "high" &&
+    implementationComplexity === "small"
+      ? "strict_bug"
+      : "none";
   const tiers: PrRatingTier[] = ["NA", "S", "A", "B", "C", "D", "F"];
   const baselineNext = baseline.nextStep?.kind === "required" ? baseline.nextStep.text : "";
   const companionNext = companion.nextStep?.kind === "required" ? companion.nextStep.text : "";
@@ -112,6 +241,31 @@ export function combineSkillAssessment(baseline: Decision, companion: Decision):
     ),
     confidence: worst(baseline.confidence, companion.confidence, ["high", "medium", "low"]),
     triagePriority,
+    itemCategory:
+      baseline.itemCategory === "security" || companion.itemCategory === "security"
+        ? "security"
+        : baseline.itemCategory === "regression" || companion.itemCategory === "regression"
+          ? "regression"
+          : baseline.itemCategory,
+    ...(assessments.length
+      ? {
+          regressionAssessment: {
+            confidence: assessments.some((value) => value.confidence === "probable")
+              ? "probable"
+              : "suspected",
+            supportingEvidence: regressionEvidence.slice(0, 3),
+          },
+        }
+      : {}),
+    ...(baseline.regressionProvenance || companion.regressionProvenance
+      ? {
+          // Candidate pointers still require the existing host verifier after this
+          // merge. Conflicting pointers cannot become arbitrary public attribution.
+          regressionProvenance: regressionConflict
+            ? null
+            : (baseline.regressionProvenance ?? companion.regressionProvenance),
+        }
+      : {}),
     risks: unique([...baseline.risks, ...companion.risks]),
     evidence: unique([...baseline.evidence, ...companion.evidence]),
     likelyOwners: ownerProjection,
@@ -121,9 +275,7 @@ export function combineSkillAssessment(baseline: Decision, companion: Decision):
     mergeRiskLabels,
     maturityLabels,
     labelJustifications,
-    mergeRiskOptions: baseline.mergeRiskOptions.length
-      ? baseline.mergeRiskOptions
-      : companion.mergeRiskOptions,
+    mergeRiskOptions: combinedMergeRiskOptions(baseline, companion),
     maintainerDecision: {
       ...maintainer,
       question: bothRequired
@@ -142,6 +294,11 @@ export function combineSkillAssessment(baseline: Decision, companion: Decision):
       options: maintainer.options,
     },
     requiresProductDecision: baseline.requiresProductDecision || companion.requiresProductDecision,
+    reproductionStatus,
+    reproductionConfidence,
+    reproductionAssessment: join(baseline.reproductionAssessment, companion.reproductionAssessment),
+    implementationComplexity,
+    autoImplementationCandidate,
     requiresNewFeature: baseline.requiresNewFeature || companion.requiresNewFeature,
     requiresNewConfigOption: baseline.requiresNewConfigOption || companion.requiresNewConfigOption,
     productReview: {
@@ -171,16 +328,10 @@ export function combineSkillAssessment(baseline: Decision, companion: Decision):
         : {}),
     },
     agentsPolicyStatus: {
-      found: baseline.agentsPolicyStatus.found || companion.agentsPolicyStatus.found,
-      readFully: baseline.agentsPolicyStatus.readFully && companion.agentsPolicyStatus.readFully,
-      applied: baseline.agentsPolicyStatus.applied && companion.agentsPolicyStatus.applied,
-      status: worst(baseline.agentsPolicyStatus.status, companion.agentsPolicyStatus.status, [
-        "not_found",
-        "found_not_applicable",
-        "found_applied",
-        "unreadable_or_unclear",
-        "conflict_not_applied",
-      ]),
+      found: policyFound,
+      readFully: policyReadFully,
+      applied: policyApplied,
+      status: policyStatus,
       summary: join(baseline.agentsPolicyStatus.summary, companion.agentsPolicyStatus.summary),
     },
     testingReview: {
@@ -221,6 +372,16 @@ export function combineSkillAssessment(baseline: Decision, companion: Decision):
     solutionAssessment: join(
       baseline.solutionAssessment,
       "Companion assessment: " + companion.solutionAssessment,
+      ...(assessments.length
+        ? ["All non-attributing regression evidence: " + stableJson(regressionEvidence)]
+        : []),
+      ...(regressionConflict
+        ? [
+            "Conflicting unverified regression provenance pointers; no predecessor attribution selected.",
+          ]
+        : []),
+      "Independent work and automation assessments: " +
+        stableJson([workAssessment(baseline), workAssessment(companion)]),
       "All merge-risk options: " +
         stableJson(unique([...baseline.mergeRiskOptions, ...companion.mergeRiskOptions])),
       "Combined label recommendations: " +
@@ -241,9 +402,32 @@ export function combineSkillAssessment(baseline: Decision, companion: Decision):
         unique([...baseline.prRating.nextSteps, ...companion.prRating.nextSteps]).join("; "),
     ),
     bestSolution: join(baseline.bestSolution, companion.bestSolution),
-    workValidation: unique([...baseline.workValidation, ...companion.workValidation]),
-    workLikelyFiles: unique([...baseline.workLikelyFiles, ...companion.workLikelyFiles]),
-    workPrompt: join(baseline.workPrompt, companion.workPrompt),
+    workCandidate,
+    workConfidence: worst(baseline.workConfidence, companion.workConfidence, [
+      "high",
+      "medium",
+      "low",
+    ]),
+    workPriority: worst(baseline.workPriority, companion.workPriority, ["low", "medium", "high"]),
+    workReason: join(
+      baseline.workReason,
+      companion.workReason,
+      ...(!queueable
+        ? [
+            "Automatic work plan withheld: an independent assessment vetoed queued work or requires owner/product/security review.",
+          ]
+        : []),
+    ),
+    workValidation: queueable
+      ? unique([...baseline.workValidation, ...companion.workValidation])
+      : [],
+    workLikelyFiles: queueable
+      ? unique([...baseline.workLikelyFiles, ...companion.workLikelyFiles])
+      : [],
+    workClusterRefs: queueable
+      ? unique([...baseline.workClusterRefs, ...companion.workClusterRefs])
+      : [],
+    workPrompt: queueable ? join(baseline.workPrompt, companion.workPrompt) : "",
   };
 }
 export function incompleteSkillAssessment(baseline: Decision, detail: string): Decision {
@@ -253,6 +437,16 @@ export function incompleteSkillAssessment(baseline: Decision, detail: string): D
     closeReason: "none",
     closeComment: "",
     codexTerminalFailure: true,
+    workCandidate: baseline.workCandidate === "none" ? "none" : "manual_review",
+    autoImplementationCandidate: "none",
+    workPrompt: "",
+    workValidation: [],
+    workLikelyFiles: [],
+    workClusterRefs: [],
+    workReason: join(
+      baseline.workReason,
+      "Explicit companion review is incomplete; no automatic work plan is authorized.",
+    ),
     summary:
       "Review incomplete: explicitly requested review skill did not finish. Baseline assessment: " +
       baseline.summary,
@@ -265,6 +459,7 @@ export function incompleteSkillAssessment(baseline: Decision, detail: string): D
     },
     solutionAssessment: join(
       baseline.solutionAssessment,
+      "Retained baseline work and automation assessment: " + stableJson(workAssessment(baseline)),
       "Review skill incomplete: " +
         detail +
         ". No dual-model consensus was produced; baseline assessment retained.",

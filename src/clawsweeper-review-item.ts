@@ -1,4 +1,4 @@
-import { ReviewSkillProcessError } from "./review-skill-diagnostics.js";
+import { ReviewSkillProcessError, ReviewSkillAuthorityError } from "./review-skill-diagnostics.js";
 import { readFileSync } from "node:fs";
 import { runReviewSkillProcess, renderSkillReceipt } from "./review-skill-process.js";
 import {
@@ -20,7 +20,7 @@ import { applyHiddenPayloadSecurityReview } from "./repair/security-signals.js";
 import { writeFileSync } from "node:fs";
 import { UserFacingCommandError } from "./command.js";
 import { reviewStatusForDecision } from "./clawsweeper-report-document.js";
-import { AgentInputScanError } from "./agent-input-scan.js";
+import { AgentInputScanError, trustedReviewGitExecutable } from "./agent-input-scan.js";
 import { reviewNetworkCapability } from "./agent-runner.js";
 import { mediaProofRuntimeHints } from "./clawsweeper-media-proof.js";
 import { PUBLIC_CODEX_MODEL } from "./codex-env.js";
@@ -56,6 +56,7 @@ export function runPreparedReviewItem(
   options: {
     reviewSkill?: PreparedReviewSkill;
     reviewSkillDeadlineAt?: number;
+    revalidateReviewSkillAuthority?: () => number;
     item: Item;
     context: ItemContext;
     git: GitInfo;
@@ -131,7 +132,15 @@ export function runPreparedReviewItem(
     throw new UserFacingCommandError(
       "Hosted review skill execution requires an owned lease deadline.",
     );
-  const reviewEnv = reviewEnvironment(sandboxMode, localOnly);
+  const reviewEnv = { ...reviewEnvironment(sandboxMode, localOnly) };
+  if (options.reviewSkill) {
+    // Dedicated companion credentials belong only to the isolated host worker,
+    // never the baseline agent reading untrusted PR instructions. Do not mutate
+    // the host environment the companion will need after baseline completes.
+    delete reviewEnv.CLAWSWEEPER_SKILL_TOKEN;
+    delete reviewEnv.CLAWSWEEPER_SKILL_API_KEY;
+    delete reviewEnv.OPENROUTER_API_KEY;
+  }
   // The review sandbox cannot fetch old blobs: make the changed files'
   // history local first, so host blame and the reviewer both read it.
   const historyCoverage =
@@ -246,6 +255,10 @@ export function runPreparedReviewItem(
       const baseTipSha = pull?.base?.sha;
       if (!headSha || !baseTipSha)
         throw new Error("Review skill requires exact PR head/base metadata.");
+      const gitExecutable = trustedReviewGitExecutable(
+        reviewOpenclawDir,
+        options.reviewSkill.gitExecutable,
+      );
       const sourceDeadlineAt =
         Date.now() +
         remainingReviewSkillTimeout(REVIEW_SKILL_SOURCE_TIMEOUT_MS, options.reviewSkillDeadlineAt);
@@ -255,23 +268,33 @@ export function runPreparedReviewItem(
         headSha,
         localRange,
         sourceDeadlineAt,
+        gitExecutable,
       );
       const evidence = [
         prompt.text,
         "Baseline ordinary assessment (untrusted evidence, obligations preserved by host):",
         JSON.stringify(decision),
-        pinnedSkillEvidence(reviewOpenclawDir, headSha, baseSha, sourceDeadlineAt),
+        pinnedSkillEvidence(reviewOpenclawDir, headSha, baseSha, sourceDeadlineAt, gitExecutable),
       ].join("\n\n");
+      let companionDeadlineAt = options.reviewSkillDeadlineAt;
+      if (!localOnly) {
+        if (!options.revalidateReviewSkillAuthority) throw new ReviewSkillAuthorityError(false);
+        companionDeadlineAt = Math.min(
+          companionDeadlineAt!,
+          options.revalidateReviewSkillAuthority(),
+        );
+      }
       const result = runReviewSkillProcess(
         {
           skill: options.reviewSkill.skill,
+          gitExecutable,
           selection: {
             ...options.reviewSkill.selection,
             config: {
               ...options.reviewSkill.selection.config,
               timeoutMs: remainingReviewSkillTimeout(
                 options.reviewSkill.selection.config.timeoutMs,
-                options.reviewSkillDeadlineAt,
+                companionDeadlineAt,
               ),
             },
           },
@@ -299,12 +322,17 @@ export function runPreparedReviewItem(
         decision,
         companionError instanceof AgentInputScanError
           ? "input safety scan refused (" + companionError.reason + ")"
-          : companionError instanceof ReviewSkillProcessError
+          : companionError instanceof ReviewSkillAuthorityError
             ? companionError.message
-            : "model/settings, pinned source, deadline, lifecycle or union verification failed",
+            : companionError instanceof ReviewSkillProcessError
+              ? companionError.message
+              : "model/settings, pinned source, deadline, lifecycle or union verification failed",
       );
       codexFailure = { error: companionError, logKind: codexReviewFailure(companionError).logKind };
-      codexFailureRetryable = codexReviewFailureRetryable(companionError);
+      codexFailureRetryable =
+        companionError instanceof ReviewSkillAuthorityError
+          ? !companionError.superseded
+          : codexReviewFailureRetryable(companionError);
     }
   }
   decision = attachFixedPullRequest(decision, item, context, existingPriorReview?.markdown);

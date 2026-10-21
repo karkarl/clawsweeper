@@ -24,7 +24,7 @@ export interface ReviewSkillSelection {
   config: SkillExecutionConfig;
 }
 // Included only on an explicitly opted-in exact review, never automatic admission.
-export const REVIEW_SKILL_RUNNER_VERSION = "target-owned-dual-review-v4-verified-source";
+export const REVIEW_SKILL_RUNNER_VERSION = "target-owned-dual-review-v12-deadline-abort-policy";
 export const REVIEW_SKILL_WIRE_VERSION = "json-string-payload-v1";
 
 function model(value: unknown): SkillModel {

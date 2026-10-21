@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runAgentWorkerProcess } from "./agent-runner.js";
-import { AgentInputScanError } from "./agent-input-scan.js";
+import { AgentInputScanError, trustedReviewGitExecutable } from "./agent-input-scan.js";
 import { agentInputScanFailureReason } from "./exact-review-failure-reason.js";
 import { parseSkillDecision } from "./review-skill-runtime.js";
 import { ReviewSkillProcessError, type SkillRunDiagnostic } from "./review-skill-diagnostics.js";
@@ -56,13 +56,35 @@ export function reviewSkillProcessEnv(
     CODEX_BIN: process.execPath,
   };
 }
+// Names are an admission boundary, not credential identity. Reject renamed
+// publication credentials before creating the worker or transmitting bytes.
+export function assertSeparateSkillCredential(env: NodeJS.ProcessEnv, key: string): void {
+  const credential = env[key]?.trim();
+  if (!credential)
+    throw new Error("Review skill incomplete: dedicated inference credential is not configured.");
+  // Credential aliases are not a closed naming taxonomy. Compare the selected
+  // bytes with every other configured value, excluding only the three admitted
+  // companion bindings (all withheld from baseline). No names/values are logged.
+  const companionKeys = new Set([
+    "CLAWSWEEPER_SKILL_TOKEN",
+    "CLAWSWEEPER_SKILL_API_KEY",
+    "OPENROUTER_API_KEY",
+  ]);
+  for (const [name, value] of Object.entries(env)) {
+    if (!companionKeys.has(name) && value?.trim() === credential)
+      throw new Error(
+        "Review skill incomplete: inference requires a separate credential from publication.",
+      );
+  }
+}
+
 export function runReviewSkillProcess(
   input: SkillInput,
   cwd: string,
 ): { decision: Decision; receipt: SkillReceipt } {
+  input = { ...input, gitExecutable: trustedReviewGitExecutable(cwd, input.gitExecutable) };
   const key = input.selection.config.provider?.apiKeyEnv ?? "CLAWSWEEPER_SKILL_TOKEN";
-  if (!process.env[key])
-    throw new Error("Review skill incomplete: dedicated inference credential is not configured.");
+  assertSeparateSkillCredential(process.env, key);
   const stateDir = mkdtempSync(join(tmpdir(), "clawsweeper-skill-"));
   const resultPath = join(stateDir, "result.json");
   try {

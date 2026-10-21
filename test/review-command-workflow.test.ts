@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+import { ReviewLeaseSupersededError } from "../dist/clawsweeper-review-comment-leases.js";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -232,6 +235,14 @@ function testScheduledCacheScenario(
       ? `${scenario} publication policy ${publicationCase.name}`
       : `scheduled ${scenario} preserves admission and terminal ledger classification`;
   test(name, (t) => {
+    const skillAuthorityCase = scenario.startsWith("changed-pr-skill-authority-")
+      ? scenario.slice("changed-pr-skill-authority-".length)
+      : null;
+    const skillAuthoritySuccess =
+      skillAuthorityCase === "owned" || skillAuthorityCase === "supplied";
+    let liveSkillState = "current";
+    let companionLaunches = 0;
+    let liveAuthorityChecks = 0;
     const refuseScan = scenario.endsWith("refusal");
     const closedBeforeSelection = scenario.startsWith("closed-");
     const invalidProofPrior = scenario.startsWith("changed-pr-proof-");
@@ -332,6 +343,13 @@ else {
     git("config", "user.email", "cache@example.invalid");
     git("config", "commit.gpgsign", "false");
     writeFileSync(join(target, "value.ts"), "const value = 1;\n");
+    if (skillAuthorityCase) {
+      mkdirSync(join(target, ".agents", "skills", "fixture-review"), { recursive: true });
+      writeFileSync(
+        join(target, ".agents", "skills", "fixture-review", "SKILL.md"),
+        "Full pinned review method.",
+      );
+    }
     git("add", ".");
     git("commit", "-qm", "base");
     const baseSha = git("rev-parse", "HEAD");
@@ -502,7 +520,14 @@ else {
             publicationPolicy: publicationCase.currentPolicy,
           })
         : "",
-      EXACT_REVIEW_ITEM_KEY: exactFailure ? `${REPO}#${ITEM_NUMBER}` : "",
+      EXACT_REVIEW_ITEM_KEY: exactFailure || skillAuthorityCase ? `${REPO}#${ITEM_NUMBER}` : "",
+      ...(skillAuthorityCase
+        ? {
+            EXACT_REVIEW_ITEM_KIND: "pull_request",
+            EXACT_REVIEW_LEASE_ID: "fixture-queue",
+            CLAWSWEEPER_SKILL_TOKEN: "fixture-only",
+          }
+        : {}),
       EXACT_REVIEW_SOURCE_HEAD_SHA: isPullRequest ? "f".repeat(40) : priorRecord.sourceRevision,
     };
     t.after(() => {
@@ -514,6 +539,66 @@ else {
       repoRelativePath: () => `records/openclaw-openclaw/items/${ITEM_NUMBER}.md`,
       isRuntimeBudgetError: () => false,
     });
+    const skillConfig = join(root, "skill-config.json");
+    if (skillAuthorityCase) {
+      writeFileSync(
+        skillConfig,
+        JSON.stringify({
+          adapter: "copilot",
+          reviewers: [
+            { model: "a", reasoningEffort: "high", contextTier: "default" },
+            { model: "b", reasoningEffort: "high", contextTier: "long_context" },
+          ],
+          coordinator: { model: "a", reasoningEffort: "high", contextTier: "default" },
+          timeoutMs: 1000,
+          maxResultBytes: 65536,
+        }),
+      );
+      const original = childProcess.spawnSync;
+      t.mock.method(childProcess, "spawnSync", (command, args, options) => {
+        if (command === process.execPath && args?.[0]?.endsWith("codex-process-worker.js")) {
+          companionLaunches++;
+          assert.equal(liveAuthorityChecks, 1);
+          assert.equal(generationCalls, 1);
+          assert.equal(options.env.GH_TOKEN, undefined);
+          const worker = JSON.parse(readFileSync(args[1], "utf8"));
+          const input = JSON.parse(options.input);
+          writeFileSync(
+            join(worker.args[1], "result.json"),
+            JSON.stringify({
+              decision: closeDecision({
+                decision: "keep_open",
+                closeReason: "none",
+                closeComment: "",
+              }),
+              receipt: {
+                status: "complete",
+                skill: input.skill,
+                repo: REPO,
+                headSha: input.headSha,
+                baseSha: input.baseSha,
+                evidenceDigest: "fixture",
+                reviewerPromptDigest: "fixture",
+                sessions: [],
+                scopes: [],
+                adjudications: [],
+              },
+            }),
+          );
+          writeFileSync(
+            worker.resultPath,
+            JSON.stringify({ status: 0, signal: null, stdout: "", stderr: "" }),
+          );
+          return { status: 0, signal: null };
+        }
+        return original(command, args, options);
+      });
+      syncBuiltinESMExports();
+      t.after(() => {
+        t.mock.restoreAll();
+        syncBuiltinESMExports();
+      });
+    }
     const providerCalls = join(root, "provider-calls");
     const provider = join(root, "codex");
     writeFileSync(
@@ -580,6 +665,7 @@ process.exitCode = 1;
       defaultLocalRangeArtifactDir: () => artifactDir,
       defaultReviewArtifactDir: () => artifactDir,
       deleteOwnedDedicatedReviewStartLease: () => {
+        if (skillAuthorityCase === "owned") return true;
         throw new Error("the workflow-supplied lease is externally owned");
       },
       detectBulkFiler: () => ({ context: null, labelPending: false, labelApplied: false }),
@@ -627,7 +713,9 @@ process.exitCode = 1;
         const supplied = {
           comment: leaseComment,
           startedAt: RESERVED_AT,
-          expiresAt: "2026-08-07T11:05:00Z",
+          expiresAt: skillAuthorityCase
+            ? new Date(Date.now() + 120000).toISOString()
+            : "2026-08-07T11:05:00Z",
           owner: LEASE_OWNER,
           commentId: LEASE_COMMENT_ID,
         };
@@ -646,7 +734,7 @@ process.exitCode = 1;
         ];
       },
       gitInfo: () => ({
-        mainSha: CURRENT_TARGET_SHA,
+        mainSha: skillAuthorityCase ? baseSha : CURRENT_TARGET_SHA,
         releaseStateComplete: true,
         latestRelease: null,
       }),
@@ -709,8 +797,31 @@ process.exitCode = 1;
       localExactReviewHistoryPath: (directory, _repo, number) =>
         join(directory, `history-${number}.md`),
       makeTreeReadOnly: () => [],
+      revalidateReviewStartLease: ({ lease, headSha: expected }) => {
+        liveAuthorityChecks++;
+        assert.equal(generationCalls, 1);
+        assert.equal(lease.commentId, LEASE_COMMENT_ID);
+        assert.equal(expected, headSha);
+        assert.equal(liveSkillState, skillAuthorityCase);
+        if (skillAuthoritySuccess) return new Date(Date.now() + 120000).toISOString();
+        if (skillAuthorityCase === "unavailable")
+          throw new Error("private transport detail must not leak");
+        throw new ReviewLeaseSupersededError();
+      },
+      pullRequestHeadSha: () => headSha,
       postReviewStartStatusComment: () => {
         startCommentCalls += 1;
+        if (skillAuthorityCase === "owned")
+          return {
+            status: "posted",
+            didMutate: true,
+            lease: {
+              owner: LEASE_OWNER,
+              commentId: LEASE_COMMENT_ID,
+              headSha,
+              comment: leaseComment,
+            },
+          };
         throw new Error("scheduled delivery must not post a second lease");
       },
       previousClawSweeperReviewDigestFromReport: () => digest("previous"),
@@ -753,7 +864,7 @@ process.exitCode = 1;
       codexReviewFailureRetryable: (error: unknown) =>
         !(error instanceof AgentInputScanError) && !sourceIncompatible,
       codexReviewFailure: () => {
-        if (codexFailure || preparationFailure || checkoutUnavailable)
+        if (skillAuthorityCase || codexFailure || preparationFailure || checkoutUnavailable)
           return {
             decision: closeDecision({
               decision: "keep_open",
@@ -795,6 +906,7 @@ process.exitCode = 1;
           assert.equal(reviewItem.authorAssociation, "CONTRIBUTOR");
         }
         generationCalls += 1;
+        if (skillAuthorityCase) liveSkillState = skillAuthorityCase;
         if (isPullRequest) {
           assert.equal(reviewTreeRoot, realpathSync(dirname(openclawDir)));
           assert.notEqual(reviewTreeRoot, join(artifactDir, "review-trees"));
@@ -919,45 +1031,94 @@ process.exitCode = 1;
         ];
         reviewCommand(
           parseArgs(
-            outputCase
+            skillAuthorityCase
               ? [
                   ...commonArgs,
-                  ...(outputCase.retention === "none" ? [] : ["--artifact-dir", artifactDir]),
+                  "--artifact-dir",
+                  artifactDir,
                   "--output-retention",
-                  outputCase.retention,
-                  "--skip-start-comment",
-                  ...(outputCase.localOnly ? ["--local-only"] : []),
-                  ...(!outputCase.localOnly && !fresh
-                    ? ["--review-source-action", "scheduled_normal_backfill"]
-                    : []),
-                  ...(cumulativeCase ? ["--result-format", "json"] : []),
-                  ...(mediaCase || outputCase.localOnly
+                  "debug",
+                  "--review-skill",
+                  "fixture-review",
+                  "--review-skill-config",
+                  skillConfig,
+                  ...(skillAuthorityCase === "owned"
                     ? []
                     : [
+                        "--skip-start-comment",
                         "--review-lease-owner",
                         LEASE_OWNER,
                         "--review-lease-comment-id",
                         String(LEASE_COMMENT_ID),
                       ]),
                 ]
-              : partialJsonFailure
-                ? [...commonArgs, "--local-only", "--result-format", "json"]
-                : [
+              : outputCase
+                ? [
                     ...commonArgs,
-                    "--artifact-dir",
-                    artifactDir,
+                    ...(outputCase.retention === "none" ? [] : ["--artifact-dir", artifactDir]),
+                    "--output-retention",
+                    outputCase.retention,
                     "--skip-start-comment",
-                    "--review-lease-owner",
-                    LEASE_OWNER,
-                    "--review-lease-comment-id",
-                    String(LEASE_COMMENT_ID),
-                    "--review-source-action",
-                    "scheduled_normal_backfill",
-                  ],
+                    ...(outputCase.localOnly ? ["--local-only"] : []),
+                    ...(!outputCase.localOnly && !fresh
+                      ? ["--review-source-action", "scheduled_normal_backfill"]
+                      : []),
+                    ...(cumulativeCase ? ["--result-format", "json"] : []),
+                    ...(mediaCase || outputCase.localOnly
+                      ? []
+                      : [
+                          "--review-lease-owner",
+                          LEASE_OWNER,
+                          "--review-lease-comment-id",
+                          String(LEASE_COMMENT_ID),
+                        ]),
+                  ]
+                : partialJsonFailure
+                  ? [...commonArgs, "--local-only", "--result-format", "json"]
+                  : [
+                      ...commonArgs,
+                      "--artifact-dir",
+                      artifactDir,
+                      "--skip-start-comment",
+                      "--review-lease-owner",
+                      LEASE_OWNER,
+                      "--review-lease-comment-id",
+                      String(LEASE_COMMENT_ID),
+                      "--review-source-action",
+                      "scheduled_normal_backfill",
+                    ],
           ),
         );
       };
 
+      if (skillAuthorityCase) {
+        if (skillAuthoritySuccess) execute();
+        else assert.throws(execute, /Codex failed/);
+        assert.equal(generationCalls, 1);
+        assert.equal(liveAuthorityChecks, 1);
+        assert.equal(companionLaunches, skillAuthoritySuccess ? 1 : 0);
+        assert.equal(startCommentCalls, skillAuthorityCase === "owned" ? 1 : 0);
+        const report = readFileSync(join(artifactDir, `${ITEM_NUMBER}.md`), "utf8");
+        assert.match(
+          report,
+          skillAuthoritySuccess ? /review_status: complete/ : /review_status: failed/,
+        );
+        assert.ok(!report.includes("private transport detail"));
+        const terminal = readAllSpooledActionEvents(root).filter(
+          (event) => event.event_type === "review.item" && event.action.status !== "started",
+        );
+        assert.equal(terminal.length, 1);
+        assert.equal(
+          terminal[0]!.action.status,
+          skillAuthoritySuccess
+            ? "completed"
+            : skillAuthorityCase === "unavailable"
+              ? "failed"
+              : "cancelled",
+        );
+        assert.equal(terminal[0]!.action.retryable, skillAuthorityCase === "unavailable");
+        return;
+      }
       if (outputCase) {
         if (cumulativeCase) {
           const stdout: string[] = [];
@@ -1460,3 +1621,14 @@ for (const path of ["structural-clean", "content-clean"]) {
     }
   }
 }
+
+for (const state of [
+  "owned",
+  "supplied",
+  "head",
+  "deleted-comment",
+  "election",
+  "queue-lost",
+  "unavailable",
+])
+  testScheduledCacheScenario("changed-pr-skill-authority-" + state);

@@ -96,10 +96,19 @@ function within(root: string, candidate: string): boolean {
   return !rel || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
-function trustedExecutable(name: string, cwd: string, lexicalCwd: string): string {
-  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+function trustedExecutable(
+  name: string,
+  cwd: string,
+  lexicalCwd: string,
+  configured?: string,
+): string {
+  if (configured !== undefined && !isAbsolute(configured))
+    throw new AgentInputScanError("unsafe_path");
+  for (const dir of configured
+    ? [dirname(configured)]
+    : (process.env.PATH ?? "").split(delimiter)) {
     if (!isAbsolute(dir)) continue;
-    const candidate = join(dir, process.platform === "win32" ? `${name}.exe` : name);
+    const candidate = configured ?? join(dir, process.platform === "win32" ? `${name}.exe` : name);
     if (
       [cwd, resolve(lexicalCwd), hostRoot, realpathSync(hostRoot)].some((root) =>
         within(root, candidate),
@@ -126,6 +135,12 @@ function trustedExecutable(name: string, cwd: string, lexicalCwd: string): strin
     return actual;
   }
   throw new AgentInputScanError("scanner_unavailable");
+}
+
+// Optional host-owned Git readers share scanner executable trust checks. Resolve
+// by filesystem only: never execute which/git in a target-influenced cwd.
+export function trustedReviewGitExecutable(cwd: string, configured?: string): string {
+  return trustedExecutable("git", realpathSync(cwd), cwd, configured);
 }
 
 function realpathWithMissingTail(path: string): string {
