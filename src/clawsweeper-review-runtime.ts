@@ -3,7 +3,11 @@ import { dirname, join, resolve } from "node:path";
 import { stringArg, type Args } from "./clawsweeper-args.js";
 import { asRecord, nonBlankStringOrUndefined } from "./value-coerce.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
-import { refreshReviewTargetBranch, ReviewGitError } from "./clawsweeper-review-blobs.js";
+import {
+  refreshReviewTargetBranch,
+  ReviewGitError,
+  githubReviewTreeBlobSizes,
+} from "./clawsweeper-review-blobs.js";
 import { loadRepositoryReviewConfig } from "./repository-review-config.js";
 import { explainSpawnFailure, UserFacingCommandError } from "./command.js";
 import type {
@@ -52,7 +56,25 @@ export function createReviewRuntime(dependencies: ReviewRuntimeDependencies) {
     const revision = run("git", ["rev-parse", `refs/remotes/origin/${branch}^{commit}`], {
       cwd: openclawDir,
     }).trim();
-    return loadRepositoryReviewConfig(openclawDir, revision, { allowFetch: true });
+    let sizes: ReadonlyMap<string, number> | undefined;
+    return loadRepositoryReviewConfig(openclawDir, revision, {
+      allowFetch: true,
+      resolveBlobSizes: (_objectIds, deadlineAt) =>
+        (sizes ??= githubReviewTreeBlobSizes({
+          repository: repo,
+          headSha: revision,
+          request: (path) =>
+            ghJson(
+              [
+                "api",
+                path,
+                "--jq",
+                '{truncated, tree: (.tree | if type == "array" then map(if type == "object" then {type, sha, size} else . end) else . end)}',
+              ],
+              { deadlineAt },
+            ),
+        })),
+    });
   }
   function gitInfo(openclawDir: string, options: ReviewGitInfoOptions = {}): GitInfo {
     const targetBranch = options.targetBranch ?? reviewTargetBranch(openclawDir);

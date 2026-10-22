@@ -115,7 +115,7 @@ export interface ReviewRuntimeDependencies {
     ghToken?: string | undefined;
     preserveCodexAuth?: boolean | undefined;
   }) => NodeJS.ProcessEnv;
-  ghJson: <T>(args: string[]) => T;
+  ghJson: <T>(args: string[], options?: { deadlineAt?: number }) => T;
   defaultRootCauseCluster: () => RootCauseClusterAssessment;
   parseDecision: (value: unknown, item?: RootCauseNormalizationItem) => Decision;
   ensureDir: (path: string) => void;

@@ -45,6 +45,12 @@ interface ReviewTreeMetadata {
   missingBlobs?: ReadonlyArray<{ objectId: string; bytes: number }>;
 }
 
+function remainingReviewTime(deadlineAt = Date.now() + REVIEW_TREE_METADATA_DEADLINE_MS): number {
+  const remaining = deadlineAt - Date.now();
+  if (remaining <= 0) throw new AgentInputScanError("deadline");
+  return remaining;
+}
+
 export interface ReviewTreeMaterializationOptions {
   targetDir: string;
   worktreeDir: string;
@@ -447,7 +453,11 @@ function reviewTreeDiskCapacity(path: string, headSha: string): ReviewTreeDiskCa
   }
 }
 
-function reviewTreeObjectStoreCapacity(targetDir: string, headSha: string): ReviewTreeDiskCapacity {
+function reviewTreeObjectStoreCapacity(
+  targetDir: string,
+  headSha: string,
+  deadlineAt?: number,
+): ReviewTreeDiskCapacity {
   const result = spawnSync(
     "git",
     ["rev-parse", "--path-format=absolute", "--git-path", "objects"],
@@ -456,6 +466,8 @@ function reviewTreeObjectStoreCapacity(targetDir: string, headSha: string): Revi
       env: localReviewGitEnv(),
       encoding: "utf8",
       maxBuffer: MAX_GIT_OUTPUT_BYTES,
+      timeout: remainingReviewTime(deadlineAt),
+      killSignal: "SIGKILL",
     },
   );
   const objectPath = checkedReviewGit(result, "review_git_inspection_failed").trim();
@@ -816,6 +828,31 @@ export function fetchReviewBlobs(
       "--stdin",
     ],
   });
+}
+
+/** Selected configuration blobs use the existing size-checked acquisition and disk admission. */
+export function admitAndFetchReviewBlobs(
+  targetDir: string,
+  headSha: string,
+  blobs: ReadonlyArray<{ objectId: string; bytes: number }>,
+  deadlineAt: number,
+): void {
+  if (!blobs.length) return;
+  if (
+    blobs.some(
+      (blob) =>
+        !GIT_OBJECT_ID.test(blob.objectId) || !Number.isSafeInteger(blob.bytes) || blob.bytes < 0,
+    )
+  )
+    throw reviewTreeBudgetError(headSha, "invalid admitted blob metadata");
+  const bytes = blobs.reduce((sum, blob) => sum + BigInt(blob.bytes), 0n);
+  const store = reviewTreeObjectStoreCapacity(targetDir, headSha, deadlineAt);
+  assertReviewTreeDiskAdmission(headSha, 0n, bytes, BigInt(REVIEW_TREE_DISK_RESERVE_BYTES), {
+    workspaceAvailableBytes: store.availableBytes,
+    objectStoreAvailableBytes: store.availableBytes,
+    sameFileSystem: true,
+  });
+  fetchMissingReviewTreeBlobs(targetDir, headSha, blobs, deadlineAt);
 }
 
 function assertReviewTreeHasBoundedTransforms(

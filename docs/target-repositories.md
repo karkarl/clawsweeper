@@ -65,7 +65,9 @@ fanout and reconciliation are not part of this configuration version.
 Configuration, selected skills and relative references use the same pinned
 revision. Bundles are limited to 64 regular UTF-8 files and 256 KiB; symlinks,
 submodules, binary files, escaping/missing Markdown references, nested skills
-and native tool-provisioning dependencies are rejected. Their digest participates
+and native tool-provisioning dependencies are rejected. Missing configuration and
+skill blobs require pinned size metadata and object-store disk admission before
+hydration; unavailable or truncated metadata fails closed. Their digest participates
 in hydrated content-cache identity, not the global admission policy. Configured
 reviews skip structural-only reuse because that receipt does not bind config
 bytes; unchanged hydrated content can still reuse its verdict. This does not
@@ -76,7 +78,8 @@ pinned bundle in an isolated native working directory and invokes its exact
 native skill paths. The reviewed checkout remains unchanged and is referenced
 for source inspection, not native skill discovery. Skill instructions cannot
 grant writes, helper execution, installation, delegation or additional models.
-Unsupported methodology must be reported, not claimed complete.
+Unsupported methodology must be reported, not claimed complete. Selected Codex
+skills preserve the normal same-thread structured-decision repair lifecycle.
 
 OpenClaw uses the existing managed review-tree parent as its isolated native
 workspace, with pinned skills outside the reviewed checkout. The existing host-owned

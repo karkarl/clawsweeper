@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { closeDecision, item } from "./helpers.ts";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
@@ -224,6 +227,7 @@ test("Codex receives native bundle separately, scanners receive selected bytes, 
   assert.equal(sent.args[sent.args.indexOf("-C") + 1], sent.cwd);
   assert.equal(sent.args[sent.args.indexOf("--sandbox") + 1], "read-only");
   assert.ok(sent.args.includes("project_root_markers=[]"));
+  assert.equal(sent.args.at(-1), "-");
   assert.ok(sent.prompt.startsWith("BASE-CONTRACT"));
   assert.ok(sent.prompt.includes("[$sample]("));
   assert.ok(sent.prompt.includes("APPENDED"));
@@ -484,7 +488,11 @@ test("hosted blob:none hydration batches the full bounded native bundle", (t) =>
   const priorTrace = process.env.GIT_TRACE;
   try {
     process.env.GIT_TRACE = trace;
-    const config = loadRepositoryReviewConfig(clone, revision, { allowFetch: true })!;
+    const config = loadRepositoryReviewConfig(clone, revision, {
+      allowFetch: true,
+      resolveBlobSizes: (ids) =>
+        new Map(ids.map((id) => [id, Number(f.git("cat-file", "-s", id))])),
+    })!;
     assert.equal(config.files.length, 64);
     assert.equal(config.digest, loadRepositoryReviewConfig(f.root, revision)!.digest);
     assert.equal(missing(), before - 65);
@@ -496,4 +504,118 @@ test("hosted blob:none hydration batches the full bounded native bundle", (t) =>
     if (priorTrace === undefined) delete process.env.GIT_TRACE;
     else process.env.GIT_TRACE = priorTrace;
   }
+});
+
+for (const mode of ["config-budget", "bundle-budget", "disk-budget"] as const)
+  test("hosted native bundle admits bytes and disk before hydration: " + mode, (t) => {
+    const f = fixture(t);
+    f.configure();
+    f.skill();
+    if (mode === "config-budget") f.put(".clawsweeper/review.json", "x".repeat(17 * 1024));
+    if (mode === "bundle-budget")
+      f.put(".agents/skills/sample/references/large.bin", Buffer.alloc(512 * 1024));
+    const revision = f.commit();
+    f.git("config", "uploadpack.allowFilter", "true");
+    const clone = mkdtempSync(join(tmpdir(), "clawsweeper-bounded-config-"));
+    t.after(() => rmSync(clone, { recursive: true, force: true }));
+    execFileSync(
+      "git",
+      ["clone", "--filter=blob:none", "--no-checkout", pathToFileURL(f.root).href, clone],
+      { stdio: "pipe" },
+    );
+    const missing = () =>
+      execFileSync("git", ["rev-list", "--objects", "--missing=print", revision], {
+        cwd: clone,
+        encoding: "utf8",
+      })
+        .split("\n")
+        .filter((line) => line.startsWith("?")).length;
+    const before = missing(),
+      original = fs.statfsSync;
+    try {
+      if (mode === "disk-budget") {
+        fs.statfsSync = ((...args: Parameters<typeof fs.statfsSync>) => ({
+          ...original(...args),
+          bavail: 0,
+        })) as typeof fs.statfsSync;
+        syncBuiltinESMExports();
+      }
+      assert.throws(
+        () =>
+          loadRepositoryReviewConfig(clone, revision, {
+            allowFetch: true,
+            resolveBlobSizes: (ids) =>
+              new Map(ids.map((id) => [id, Number(f.git("cat-file", "-s", id))])),
+          }),
+        /budget|available|capacity/,
+      );
+    } finally {
+      fs.statfsSync = original;
+      syncBuiltinESMExports();
+    }
+    assert.equal(missing(), before - (mode === "bundle-budget" ? 1 : 0));
+  });
+
+test("selected native Codex skills retain the same-thread decision repair lifecycle", (t) => {
+  const f = fixture(t);
+  f.configure();
+  f.skill();
+  const config = loadRepositoryReviewConfig(f.root, f.commit())!;
+  const bin = useFakeScanner(t),
+    binary = join(bin, "native-repair"),
+    calls = join(bin, "repair-calls.jsonl"),
+    output = join(bin, "repair-result.json");
+  const session = "019f0560-0000-7000-8000-0000000000a1",
+    valid = closeDecision({ decision: "keep_open", closeReason: "none" });
+  writeFileSync(
+    binary,
+    "#!" +
+      process.execPath +
+      '\nconst fs=require("node:fs"),args=process.argv.slice(2);fs.readFileSync(0,"utf8");fs.appendFileSync(' +
+      JSON.stringify(calls) +
+      ',JSON.stringify(args)+"\\n");process.stderr.write(' +
+      JSON.stringify(
+        "OpenAI Codex v0.0.0\n--------\nsandbox: read-only\nsession id: " +
+          session +
+          "\n--------\nuser\n",
+      ) +
+      ');console.log(args.includes("resume")?' +
+      JSON.stringify(JSON.stringify(valid)) +
+      ":" +
+      JSON.stringify('{"decision":"keep_open"}') +
+      ");",
+    { mode: 0o755 },
+  );
+  const result = runAgentProcess({
+    label: "native-skill-repair",
+    prompt: "Review",
+    scanSource: { kind: "prompt" },
+    model: "internal",
+    cwd: f.root,
+    env: { ...process.env, CODEX_BIN: binary },
+    timeoutMs: 10000,
+    repositoryReview: config,
+    decisionRepair: { item: item({ kind: "pull_request" }) },
+    outputLastMessageBytes: 128 * 1024,
+    codexExtraArgs: [
+      "-C",
+      f.root,
+      "--sandbox",
+      "read-only",
+      "--output-last-message",
+      output,
+      "--json",
+      "-",
+    ],
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const rows = readFileSync(calls, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].at(-1), "-");
+  assert.deepEqual(rows[1], [...rows[0].slice(0, -1), "resume", session, "-"]);
+  assert.equal(JSON.parse(readFileSync(output, "utf8")).decision, "keep_open");
+  assert.equal(f.git("status", "--porcelain"), "");
 });

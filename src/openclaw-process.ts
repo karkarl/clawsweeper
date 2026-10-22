@@ -1,5 +1,4 @@
 import { isRecord } from "./value-coerce.js";
-import { resolveSpawnCommand } from "./command.js";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -291,33 +290,48 @@ function readCheckoutReceipt(params: {
     // exporter, not a private database schema or another session's state.
     const remaining = params.deadlineAt - Date.now();
     if (remaining <= 0) return undefined;
-    const invocation = resolveSpawnCommand(
-      params.options.env.CLAWSWEEPER_OPENCLAW_BIN?.trim() || "openclaw",
-      [
-        "sessions",
-        "export-trajectory",
-        "--agent",
-        "main",
-        "--session-key",
-        "agent:main:explicit:" + params.sessionId,
-        "--workspace",
-        params.stateDir,
-        "--output",
-        "checkout-receipt",
-        "--json",
-      ],
-      { cwd: params.options.cwd, env: params.childEnv },
+    const timeoutMs = Math.min(10_000, remaining);
+    const workerOptionsPath = join(params.stateDir, "receipt-worker.json");
+    const resultPath = join(params.stateDir, "receipt-result.json");
+    const stdoutPath = join(params.stateDir, "receipt-stdout.json");
+    writeFileSync(
+      workerOptionsPath,
+      JSON.stringify({
+        command: params.options.env.CLAWSWEEPER_OPENCLAW_BIN?.trim() || "openclaw",
+        args: [
+          "sessions",
+          "export-trajectory",
+          "--agent",
+          "main",
+          "--session-key",
+          "agent:main:explicit:" + params.sessionId,
+          "--workspace",
+          params.stateDir,
+          "--output",
+          "checkout-receipt",
+          "--json",
+        ],
+        timeoutMs,
+        resultPath,
+        stdoutPath,
+        stderrPath: join(params.stateDir, "receipt-stderr.log"),
+        tailBytes: 256 * 1024,
+        maxOutputFileBytes: 256 * 1024,
+      }),
+      { mode: 0o600 },
     );
-    const exported = spawnSync(invocation.command, invocation.args, {
+    // Reuse the same native worker's process-group forwarding and escalation.
+    // Pass the filtered environment exactly, never merge ambient workflow secrets.
+    const worker = spawnSync(process.execPath, [OPENCLAW_PROCESS_WORKER_PATH, workerOptionsPath], {
       cwd: params.options.cwd,
       env: params.childEnv,
-      ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
-      encoding: "utf8",
-      timeout: Math.min(10_000, remaining),
-      maxBuffer: 256 * 1024,
+      stdio: "ignore",
+      timeout: timeoutMs + 10_000,
     });
-    if (exported.status !== 0 || exported.error) return undefined;
-    const summary: unknown = JSON.parse(exported.stdout);
+    if (worker.error || !existsSync(resultPath)) return undefined;
+    const exported = deserializeResult(JSON.parse(readFileSync(resultPath, "utf8")));
+    if (exported.error || exported.status !== 0) return undefined;
+    const summary: unknown = JSON.parse(readFileSync(stdoutPath, "utf8"));
     if (!isRecord(summary) || summary.sessionId !== params.sessionId) return undefined;
     const exportDir = join(params.stateDir, ".openclaw", "trajectory-exports", "checkout-receipt");
     const eventPath = join(exportDir, "events.jsonl");

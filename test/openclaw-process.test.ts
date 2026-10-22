@@ -36,6 +36,14 @@ function fakeOpenclaw(root: string): string {
 const fs = require("node:fs");
 if (process.argv[2] === "sessions") {
   if (!process.env.OPENCLAW_TEST_SQLITE_EXPORT) process.exit(4);
+  if (process.env.OPENCLAW_TEST_HANG_EXPORT) {
+    const cp = require("node:child_process");
+    const child = cp.spawn(process.execPath, ["-e", 'process.on("SIGTERM",()=>{});setInterval(()=>{},1000)'], {stdio:"ignore"});
+    fs.writeFileSync(process.env.OPENCLAW_TEST_HANG_EXPORT, JSON.stringify({pid:process.pid, child:child.pid}));
+    process.on("SIGTERM",()=>{});
+    setInterval(()=>{},1000);
+    return;
+  }
   const path = require("node:path");
   const key = process.argv[process.argv.indexOf("--session-key") + 1];
   const sessionId = key.slice("agent:main:explicit:".length);
@@ -952,5 +960,45 @@ setInterval(() => {}, 1000);
       }
       rmSync(root, { recursive: true, force: true });
     }
+  },
+);
+
+test(
+  "native receipt export deadline settles SIGTERM-resistant descendants",
+  { skip: process.platform !== "linux" },
+  (t) => {
+    const root = mkdtempSync(join(tmpdir(), "clawsweeper-export-deadline-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const binary = fakeOpenclaw(root),
+      pids = join(root, "pids.json"),
+      recordPath = join(root, "record.json");
+    const started = Date.now();
+    const result = runOpenclawProcess({
+      label: "export-deadline",
+      prompt: "challenge",
+      model: "openai/test",
+      cwd: root,
+      env: {
+        ...process.env,
+        CLAWSWEEPER_OPENCLAW_BIN: binary,
+        OPENCLAW_TEST_RECORD: recordPath,
+        OPENCLAW_TEST_SQLITE_EXPORT: "1",
+        OPENCLAW_TEST_HANG_EXPORT: pids,
+        OPENCLAW_TEST_READ_PATH: "tracked.txt",
+        OPENCLAW_TEST_STDOUT: JSON.stringify({
+          payloads: [{ text: "tracked checkout content" }],
+          meta: { stopReason: "stop" },
+        }),
+      },
+      timeoutMs: 1200,
+      checkoutInspection: { expectedText: "tracked checkout content", expectedPath: "tracked.txt" },
+    });
+    assert.equal(result.status, 1);
+    // The native process worker reserves its existing one-second kill escalation.
+    assert.ok(Date.now() - started < 4000);
+    const receipt = JSON.parse(readFileSync(pids, "utf8"));
+    assert.equal(processAlive(receipt.pid), false);
+    assert.equal(processAlive(receipt.child), false);
+    assert.equal(existsSync(JSON.parse(readFileSync(recordPath, "utf8")).stateDir), false);
   },
 );

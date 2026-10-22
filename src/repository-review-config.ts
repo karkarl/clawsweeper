@@ -12,7 +12,7 @@ import { dirname, join, resolve, posix } from "node:path";
 import MarkdownIt from "markdown-it/browser";
 import { parse } from "yaml";
 import { readReviewGit } from "./pr-review-evidence.js";
-import { fetchReviewBlobs } from "./clawsweeper-review-blobs.js";
+import { admitAndFetchReviewBlobs } from "./clawsweeper-review-blobs.js";
 import { sha256 } from "./content-hash.js";
 import { stableJson } from "./stable-json.js";
 
@@ -33,7 +33,13 @@ export interface RepositoryReviewConfig {
 export function loadRepositoryReviewConfig(
   cwd: string,
   revision: string,
-  options: { allowFetch?: boolean } = {},
+  options: {
+    allowFetch?: boolean;
+    resolveBlobSizes?: (
+      objectIds: readonly string[],
+      deadlineAt: number,
+    ) => ReadonlyMap<string, number>;
+  } = {},
 ): RepositoryReviewConfig | undefined {
   if (!/^[a-f0-9]{40}$/.test(revision))
     throw new Error("Invalid target review configuration revision.");
@@ -43,7 +49,6 @@ export function loadRepositoryReviewConfig(
     const bytes = readReviewGit(cwd, args, {
       maxBytes,
       deadlineAt,
-      lazyFetch: options.allowFetch === true && args[0] === "ls-tree",
     });
     if (!bytes) throw new Error("Cannot read pinned repository review configuration.");
     const text = bytes.toString("utf8");
@@ -64,11 +69,72 @@ export function loadRepositoryReviewConfig(
   if (!configEntries.length) return undefined;
   if (configEntries.length !== 1 || configEntries[0]!.path !== CONFIG_PATH)
     throw new Error("Repository review configuration must be a regular file.");
-  const prefetch = (objectIds: string[]) => {
-    if (options.allowFetch && objectIds.length && !fetchReviewBlobs(cwd, objectIds, deadlineAt))
-      throw new Error("Cannot fetch pinned repository review configuration.");
+  const prefetch = (objects: Array<{ oid: string; path: string }>, maxBytes: number) => {
+    const objectIds = [...new Set(objects.map((object) => object.oid))];
+    if (!objectIds.length) return;
+    // Enumerate availability before cat-file: older Git may otherwise try a lazy fetch.
+    const availability = readReviewGit(
+      cwd,
+      [
+        "--literal-pathspecs",
+        "rev-list",
+        "--objects",
+        "--missing=print",
+        revision + "^{tree}",
+        "--",
+        ...objects.map((object) => object.path),
+      ],
+      { deadlineAt, maxBytes: MAX_BYTES },
+    );
+    if (!availability) throw new Error("Cannot read pinned repository blob availability.");
+    const missing: string[] = [],
+      present: string[] = [],
+      seen = new Set<string>();
+    for (const line of availability.toString("utf8").split("\n")) {
+      const match = /^(\??)([a-f0-9]{40})(?: |$)/.exec(line);
+      if (!match || !objectIds.includes(match[2]!)) continue;
+      if (seen.has(match[2]!)) throw new Error("Ambiguous pinned repository blob availability.");
+      seen.add(match[2]!);
+      (match[1] ? missing : present).push(match[2]!);
+    }
+    if (seen.size !== objectIds.length)
+      throw new Error("Incomplete pinned repository blob availability.");
+    const sizes = new Map<string, number>();
+    if (present.length) {
+      const metadata = readReviewGit(cwd, ["cat-file", "--batch-check"], {
+        input: Buffer.from(present.join("\n") + "\n"),
+        deadlineAt,
+        maxBytes: 16 * 1024,
+      });
+      if (!metadata)
+        throw new Error("Cannot read pinned repository review configuration metadata.");
+      for (const line of metadata.toString("utf8").trim().split("\n")) {
+        const match = /^([a-f0-9]{40}) blob ([0-9]+)$/.exec(line);
+        if (!match || !present.includes(match[1]!) || sizes.has(match[1]!))
+          throw new Error("Invalid pinned repository blob metadata.");
+        sizes.set(match[1]!, Number(match[2]));
+      }
+    }
+    if (missing.length) {
+      if (!options.allowFetch || !options.resolveBlobSizes)
+        throw new Error(
+          "Cannot read pinned repository review configuration: size metadata unavailable.",
+        );
+      const remote = options.resolveBlobSizes(missing, deadlineAt);
+      for (const id of missing) sizes.set(id, remote.get(id)!);
+    }
+    if (objectIds.some((id) => !Number.isSafeInteger(sizes.get(id)) || sizes.get(id)! < 0))
+      throw new Error("Incomplete pinned repository blob sizes.");
+    if (objects.reduce((sum, object) => sum + sizes.get(object.oid)!, 0) > maxBytes)
+      throw new Error("Native skill bundle exceeds text budget.");
+    admitAndFetchReviewBlobs(
+      cwd,
+      revision,
+      missing.map((objectId) => ({ objectId, bytes: sizes.get(objectId)! })),
+      deadlineAt,
+    );
   };
-  prefetch([configEntries[0]!.oid]);
+  prefetch(configEntries, 16 * 1024);
   const configText = read(["cat-file", "blob", configEntries[0]!.oid], 16 * 1024);
   const config: unknown = JSON.parse(configText);
   if (!config || typeof config !== "object" || Array.isArray(config))
@@ -102,7 +168,10 @@ export function loadRepositoryReviewConfig(
     throw new Error("Native skill bundle exceeds file limit.");
   // One host-owned fetch for all selected blobs, not one network request per
   // cat-file on blob:none checkouts. Reads remain local and share the deadline.
-  prefetch([...new Set(bundles.flatMap(({ bundle }) => bundle.map((file) => file.oid)))]);
+  prefetch(
+    bundles.flatMap(({ bundle }) => bundle),
+    MAX_BYTES - size,
+  );
   for (const { directory, bundle } of bundles) {
     const prefix = ".agents/skills/" + directory + "/";
     for (const file of bundle) {

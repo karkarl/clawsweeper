@@ -136,11 +136,14 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
         for (let i = 0; i < extraArgs.length; i++) {
           if (extraArgs[i] === "-C" || extraArgs[i] === "--cd") extraArgs[++i] = native.cwd;
         }
+        const stdin = extraArgs.at(-1) === "-" ? extraArgs.pop() : undefined;
+        extraArgs.push("--skip-git-repo-check", "-c", "project_root_markers=[]");
+        if (stdin) extraArgs.push(stdin);
         options = {
           ...options,
           cwd: native.cwd,
           prompt: options.prompt + "\n\n" + native.prompt,
-          codexExtraArgs: [...extraArgs, "--skip-git-repo-check", "-c", "project_root_markers=[]"],
+          codexExtraArgs: extraArgs,
         };
       }
       if (native && options.diagnosticPromptPath)
