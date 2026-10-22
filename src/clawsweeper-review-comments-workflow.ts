@@ -33,7 +33,6 @@ import {
 } from "./clawsweeper-review-comment-publication.js";
 import {
   reviewStartLeaseOwner,
-  revalidateReviewStartLease,
   exactReviewQueueAuthorityFromEnv,
   postReviewStartStatusComment,
   deleteOwnedDedicatedReviewStartLease,
@@ -57,8 +56,6 @@ export function createReviewCommentWorkflow(readLiveReviewRevision: (item: Item)
     fetchIssueReviewComments,
     writeCommentPayload,
     exactReviewQueueAuthorityFromEnv,
-    revalidateReviewStartLease: (options: Parameters<typeof revalidateReviewStartLease>[0]) =>
-      revalidateReviewStartLease(options, readLiveReviewRevision),
     postReviewStartStatusComment: (options: Parameters<typeof postReviewStartStatusComment>[0]) =>
       postReviewStartStatusComment(options, readLiveReviewRevision),
     deleteOwnedDedicatedReviewStartLease,

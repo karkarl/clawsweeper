@@ -1,7 +1,7 @@
 import { randomInt } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { lstatSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { lstatSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { codexModelArgs, redactInternalCodexModel } from "./codex-env.js";
 import { runCodexProcess, type CodexProcessResult } from "./codex-process.js";
 import { runOpenclawProcess } from "./openclaw-process.js";
@@ -55,38 +55,6 @@ export function reviewNetworkCapability(
     // OpenClaw's final child allowlist strips workflow credentials, including GH_TOKEN.
     hasGitHubToken: runner === "codex" && Boolean(env.GH_TOKEN?.trim()),
   };
-}
-
-// Host-selected JavaScript workers only. Callers supply trusted installed paths,
-// never target instructions or a command from CLI/config; no runner/model fallback.
-export function runAgentWorkerProcess(
-  options: Pick<
-    Parameters<typeof runCodexProcess>[0],
-    | "cwd"
-    | "env"
-    | "input"
-    | "timeoutMs"
-    | "tailBytes"
-    | "outputFileBytes"
-    | "stdoutPath"
-    | "stderrPath"
-  > & { workerPath: string; workerArgs: readonly string[] },
-): CodexProcessResult {
-  if (
-    !isAbsolute(options.workerPath) ||
-    !/\.m?js$/.test(options.workerPath) ||
-    !lstatSync(options.workerPath).isFile() ||
-    realpathSync(options.workerPath) !== options.workerPath
-  )
-    throw new Error(
-      "Agent worker requires a trusted absolute regular JavaScript path without symlinks.",
-    );
-  const { workerPath, workerArgs, ...managed } = options;
-  return runCodexProcess({
-    ...managed,
-    args: [workerPath, ...workerArgs],
-    env: { ...options.env, CODEX_BIN: process.execPath },
-  });
 }
 
 export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessResult {

@@ -3,10 +3,6 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { join, relative } from "node:path";
 import test, { type TestContext } from "node:test";
 
-import { combineSkillAssessment } from "../dist/review-skill-combine.js";
-import { reviewDecisionParser } from "../dist/clawsweeper-decision-parser.js";
-import { markdownFor } from "../dist/clawsweeper-report-document.js";
-import { closeDecision, item } from "./helpers.ts";
 import { createDashboardAudit } from "../dist/clawsweeper-dashboard-audit.js";
 import * as presentation from "../dist/clawsweeper-dashboard.js";
 import { createReviewPlanningDashboard } from "../dist/clawsweeper-review-planning-dashboard.js";
@@ -438,59 +434,5 @@ test("unreadable review activity and external close descriptions retain only hos
       assert.equal(bucket.closeDecisions, 0);
       assert.equal(bucket.keepOpenDecisions, 0);
     }
-  }
-});
-
-test("combined work veto excludes a real fresh report from dashboard work candidates in both orders", (t) => {
-  const f = fixture(t);
-  const queued = reviewDecisionParser.parseDecision(
-    closeDecision({
-      decision: "keep_open",
-      closeReason: "none",
-      closeComment: "",
-      fixedSha: null,
-      workCandidate: "queue_fix_pr",
-      workConfidence: "high",
-      workPriority: "high",
-      workReason: "Automatic repair proposed.",
-      workPrompt: "Repair this source.",
-      workLikelyFiles: ["source.ts"],
-      workValidation: ["pnpm run check"],
-    }),
-  );
-  const blocked = reviewDecisionParser.parseDecision({
-    ...queued,
-    workCandidate: "manual_review",
-    workReason: "Security review must happen first.",
-    workPrompt: "Manual investigation only.",
-    securityReview: {
-      status: "needs_attention",
-      summary: "Credential boundary requires review.",
-      concerns: [],
-    },
-  });
-  const render = (decision: typeof queued) => {
-    decision.localCheckoutAccess = "verified";
-    return markdownFor({
-      item: item({ repo: "openclaw/openclaw", number: 43, kind: "pull_request" }),
-      decision,
-      context: { issue: {}, comments: [], timeline: [] },
-      git: { mainSha: "a".repeat(40), latestRelease: null, releaseStateComplete: true },
-      action: { actionTaken: "kept_open" },
-      reviewMode: "propose",
-      snapshotHash: "snapshot",
-      contentDigest: "content",
-      reviewPolicy: "policy",
-      runtime: { model: "Codex", reasoningEffort: "high" },
-    } as Parameters<typeof markdownFor>[0]);
-  };
-  f.put(43, render({ ...queued }));
-  assert.match(f.dashboard(), /\| Work candidates awaiting promotion \| 1 \|/);
-  for (const [left, right] of [
-    [queued, blocked],
-    [blocked, queued],
-  ]) {
-    f.put(43, render(combineSkillAssessment(left!, right!)));
-    assert.match(f.dashboard(), /\| Work candidates awaiting promotion \| 0 \|/);
   }
 });

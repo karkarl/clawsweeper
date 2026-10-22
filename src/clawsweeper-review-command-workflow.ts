@@ -1,7 +1,3 @@
-import { ReviewLeaseSupersededError } from "./clawsweeper-review-comment-leases.js";
-import { ReviewSkillAuthorityError } from "./review-skill-diagnostics.js";
-import { reviewSkillLeaseDeadline } from "./review-skill-config.js";
-import { reviewExecutionCacheCompatible } from "./clawsweeper-review-policy-hash.js";
 import { runLocalRangeReview } from "./clawsweeper-local-command.js";
 import { runPreparedReviewItem, writePreparedReviewReport } from "./clawsweeper-review-item.js";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
@@ -251,8 +247,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     const preparation = prepareReviewCommand(args, dependencies);
     const {
       prAdmissionInput,
-      reviewSkill,
-      reviewCacheModel,
       localOnly,
       itemNumber,
       itemNumbers,
@@ -266,7 +260,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       model,
       sandboxMode,
       timeoutMs,
-      reviewLeaseTimeoutMs,
       expectedSourceRevision,
       allowClosed,
       coordinationHeldPath,
@@ -379,11 +372,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       const { candidates, scannedPages } = prAdmissionInput
         ? { candidates: [prAdmissionInput.item], scannedPages: 0 }
         : selectCandidates(selectionOptions);
-      if (reviewSkill && candidates.some((item) => item.kind !== "pull_request")) {
-        throw new UserFacingCommandError(
-          "Explicit review skill mode rejects issues; select one exact PR.",
-        );
-      }
       const itemOutputBudget = configureReviewOutputItems(
         outputBudget,
         Math.max(1, candidates.length),
@@ -728,7 +716,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         // Policy changes require fresh review bytes, not restamped cached provenance.
         // Keep the prior report and history available to the normal review path.
         const cacheEligibleReview =
-          !reviewSkill?.sourceFailure && priorReview && reviewExecutionCacheCompatible(priorReview.reviewModel, reviewCacheModel, PUBLIC_CODEX_MODEL) && reportMatchesPublicationPolicy(priorReview.markdown, publicationPolicy)
+          priorReview && reportMatchesPublicationPolicy(priorReview.markdown, publicationPolicy)
             ? priorReview
             : null;
         const expectedPreviousReviewDigest = priorReview
@@ -740,7 +728,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             const startComment = postReviewStartStatusComment({
               item,
               headSha: headSha(),
-              reviewTimeoutMs: reviewLeaseTimeoutMs,
+              reviewTimeoutMs: timeoutMs,
               position: completed + 1,
               total: candidates.length,
               shardIndex,
@@ -776,7 +764,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           const structuralProbeDecision = reviewStructuralCacheProbeDecision({
             review: cacheEligibleReview,
             reviewPolicy,
-            reviewModel: reviewCacheModel,
+            reviewModel: PUBLIC_CODEX_MODEL,
             explicitDispatch,
             maintainerRequest,
             coordinationEnabled: structuralCacheCoordinationEnabled,
@@ -794,7 +782,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                 item,
                 git,
                 reviewPolicy,
-                reviewModel: reviewCacheModel,
+                reviewModel: PUBLIC_CODEX_MODEL,
               });
               if (!reviewStructuralRecordAtLeastAsFresh(structuralRecord, item.updatedAt)) {
                 structuralRecord = null;
@@ -820,7 +808,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               priorRecord: priorReview?.structuralRecord ?? null,
               currentRecord: structuralRecord,
               reviewPolicy,
-              reviewModel: reviewCacheModel,
+              reviewModel: PUBLIC_CODEX_MODEL,
               explicitDispatch,
               maintainerRequest,
               coordinationEnabled: structuralCacheCoordinationEnabled,
@@ -883,7 +871,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                   const startComment = postReviewStartStatusComment({
                     item,
                     headSha: leaseRevision ?? "",
-                    reviewTimeoutMs: reviewLeaseTimeoutMs,
+                    reviewTimeoutMs: timeoutMs,
                     position: completed + 1,
                     total: candidates.length,
                     shardIndex,
@@ -922,7 +910,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                   item,
                   git,
                   reviewPolicy,
-                  reviewModel: reviewCacheModel,
+                  reviewModel: PUBLIC_CODEX_MODEL,
                 });
                 if (
                   !reviewStructuralRecordAtLeastAsFresh(revalidatedStructuralRecord, item.updatedAt)
@@ -952,7 +940,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                 priorRecord: initialStructuralRecord,
                 currentRecord: revalidatedStructuralRecord,
                 reviewPolicy,
-                reviewModel: reviewCacheModel,
+                reviewModel: PUBLIC_CODEX_MODEL,
                 explicitDispatch,
                 maintainerRequest,
                 coordinationEnabled: true,
@@ -1159,7 +1147,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               item,
               git,
               reviewPolicy,
-              reviewModel: reviewCacheModel,
+              reviewModel: PUBLIC_CODEX_MODEL,
             });
             if (
               reviewStructuralRecordsDescribeSameVerdictInput(
@@ -1208,7 +1196,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               item,
               git: refreshedGit,
               reviewPolicy,
-              reviewModel: reviewCacheModel,
+              reviewModel: PUBLIC_CODEX_MODEL,
             });
           } catch (error) {
             structuralCacheRevalidationFailures += 1;
@@ -1421,29 +1409,12 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           context, proofScratchDir, undefined,
           reviewOutputMediaLimits(outputBudget, proofScratchDir), writeOutputMetadata,
         );
-        let reviewSkillDeadlineAt: number | undefined;
-        if (reviewSkill && !localOnly) {
-          const ownedLease = acquiredReviewLease;
-          const activeLease = ownedLease?.comment ? freshDedicatedReviewStartLeases({
-            comments: [ownedLease.comment], itemNumber: item.number, headSha: ownedLease.headSha, nowMs: Date.now(),
-          }).find(lease => lease.owner === ownedLease.owner && commentId(lease.comment) === ownedLease.commentId) : undefined;
-          if (!activeLease) throw new UserFacingCommandError("Explicit review skill requires a current owned lease with a verified expiry.");
-          reviewSkillDeadlineAt = reviewSkillLeaseDeadline(activeLease.expiresAt);
-        }
         const { decision, runtime, codexFailure, codexFailureRetryable, snapshotHash } = runPreparedReviewItem({
           item, context, git, model, sandboxMode, localOnly, localRange: false,
           reviewOpenclawDir, reviewTreesDir, additionalPrompt, proofScratchDir,
           preparedMediaProof, resolveProvenancePull, shardIndex, shardCount, timeoutMs,
           humanLocalReview, outputSelection, outputBudget, itemOutputBudget, codexWorkDir,
           forcedLoginMethod, itemCodexProfile, existingPriorReview, contextElapsedMs,
-          ...(reviewSkill ? { reviewSkill } : {}),
-          ...(reviewSkillDeadlineAt === undefined ? {} : { reviewSkillDeadlineAt }),
-          ...(reviewSkill && !localOnly ? {revalidateReviewSkillAuthority: () => {
-            try {
-              if(!acquiredReviewLease)throw new ReviewLeaseSupersededError();
-              return reviewSkillLeaseDeadline(dependencies.revalidateReviewStartLease({item,lease:acquiredReviewLease,headSha:pullHeadShaFromContext(context) ?? ""}));
-            } catch(error) { throw new ReviewSkillAuthorityError(error instanceof ReviewLeaseSupersededError); }
-          }} : {}),
           onPrompt: (prompt) => { diagnosticPrompt = prompt; },
         }, dependencies);
         const codexElapsedMs = runtime.codexElapsedMs;

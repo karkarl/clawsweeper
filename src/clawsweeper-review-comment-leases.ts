@@ -360,44 +360,6 @@ export function postReviewStartStatusComment(
   }
 }
 
-// Reuse the normal live source reader, lease election and queue heartbeat at
-// the final paid-companion boundary. No captured comment is authority here.
-export function revalidateReviewStartLease(
-  options: { item: Item; lease: AcquiredReviewStartLease; headSha: string },
-  readLiveReviewRevision: (item: Item) => string,
-): string {
-  const expected = options.headSha.toLowerCase();
-  const authority = exactReviewQueueAuthorityFromEnv();
-  if (!authority)
-    throw new UserFacingCommandError(
-      "Exact-review queue authority is required for hosted skill execution.",
-    );
-  if (
-    authority.itemKey.toLowerCase() !==
-      (options.item.repo + "#" + options.item.number).toLowerCase() ||
-    authority.sourceHeadSha !== expected ||
-    readLiveReviewRevision(options.item).toLowerCase() !== expected
-  )
-    throw new ReviewLeaseSupersededError();
-  const winner = freshDedicatedReviewStartLeases({
-    comments: issueReviewCommentState(options.item.number).leaseComments,
-    itemNumber: options.item.number,
-    headSha: expected,
-    nowMs: Date.now(),
-  })[0];
-  if (
-    !winner ||
-    winner.owner !== options.lease.owner ||
-    commentId(winner.comment) !== options.lease.commentId ||
-    options.lease.headSha !== expected
-  )
-    throw new ReviewLeaseSupersededError();
-  assertExactReviewQueueAuthority(authority);
-  if (readLiveReviewRevision(options.item).toLowerCase() !== expected)
-    throw new ReviewLeaseSupersededError();
-  return winner.expiresAt;
-}
-
 export function deleteOwnedDedicatedReviewStartLease(
   itemNumber: number,
   lease: AcquiredReviewStartLease,

@@ -28,7 +28,6 @@ for (const source of [
   "metadata-none-json",
   "metadata-summary",
   "metadata-debug",
-  "metadata-skill",
   "metadata-overflow",
 ]) {
   for (const total of source.startsWith("metadata-") ? [166686] : [166686, 49999]) {
@@ -38,13 +37,7 @@ for (const source of [
       const overflow = source === "metadata-overflow";
       const json = source === "metadata-none-json";
       const retention =
-        overflow || json
-          ? "none"
-          : source === "metadata-skill"
-            ? "debug"
-            : metadataOnly
-              ? source.slice("metadata-".length)
-              : "debug";
+        overflow || json ? "none" : metadataOnly ? source.slice("metadata-".length) : "debug";
       const artifactDir = join(root, "output");
       const scratch = join(root, "tmp");
       mkdirSync(scratch);
@@ -88,21 +81,6 @@ for (const source of [
         draft: true,
       };
       const admissionPath = join(root, "admission.json");
-      const skillConfigPath = join(root, "operator.json");
-      if (source === "metadata-skill")
-        writeFileSync(
-          skillConfigPath,
-          JSON.stringify({
-            adapter: "copilot",
-            reviewers: [
-              { model: "a", reasoningEffort: "high", contextTier: "default" },
-              { model: "b", reasoningEffort: "high", contextTier: "long_context" },
-            ],
-            coordinator: { model: "a", reasoningEffort: "high", contextTier: "default" },
-            timeoutMs: 1000,
-            maxResultBytes: 65536,
-          }),
-        );
       if (metadataOnly)
         writeFileSync(admissionPath, JSON.stringify({ repo: "OpenClaw/OpenClaw", pull: rawPull }));
       const stop = new Error("CONTROL_REACHED_NORMAL_HYDRATION");
@@ -219,9 +197,6 @@ for (const source of [
           "--output-retention",
           retention,
           ...(json ? ["--result-format", "json"] : []),
-          ...(source === "metadata-skill"
-            ? ["--review-skill", "fixture-review", "--review-skill-config", skillConfigPath]
-            : []),
           ...(retention === "none" ? [] : ["--artifact-dir", artifactDir]),
           "--skip-start-comment",
           ...(metadataOnly ? ["--local-only", "--pr-admission-file", admissionPath] : []),

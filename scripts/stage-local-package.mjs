@@ -18,7 +18,6 @@ const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const ENTRIES = [
   "dist/clawsweeper-local.js",
   "dist/codex-process-worker.js",
-  "dist/review-skill-worker.js",
   "dist/openclaw-process-worker.js",
   "dist/git-acquisition-worker.js",
   "scripts/setup-review-tools.mjs",
@@ -112,15 +111,11 @@ export async function stageLocalPackage(destination, root = ROOT) {
   const metadata = JSON.parse(sourceFile(root, "package.json").toString("utf8"));
   const { files, packages } = await collectLocalModules(root, ENTRIES);
   const dependencies = {};
-  const optionalDependencies = {};
   for (const name of [...packages].sort()) {
-    if (typeof metadata.optionalDependencies?.[name] === "string") {
-      optionalDependencies[name] = metadata.optionalDependencies[name];
-    } else if (typeof metadata.dependencies?.[name] === "string") {
-      dependencies[name] = metadata.dependencies[name];
-    } else {
+    if (typeof metadata.dependencies?.[name] !== "string") {
       throw new Error(`Local runtime dependency is not declared for production: ${name}`);
     }
+    dependencies[name] = metadata.dependencies[name];
   }
   for (const name of ASSETS) files.set(name, sourceFile(root, name));
   files.set("README.md", sourceFile(root, "docs/local-package.md"));
@@ -137,8 +132,7 @@ export async function stageLocalPackage(destination, root = ROOT) {
           engines: metadata.engines,
           bin: { "clawsweeper-review": "dist/clawsweeper-local.js" },
           files: [...files.keys()].sort(),
-          ...(Object.keys(dependencies).length ? { dependencies } : {}),
-          ...(Object.keys(optionalDependencies).length ? { optionalDependencies } : {}),
+          ...(packages.size ? { dependencies } : {}),
         },
         null,
         2,

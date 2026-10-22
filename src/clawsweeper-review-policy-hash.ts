@@ -37,20 +37,3 @@ export function reviewPolicyHash(
     }),
   ).slice(0, 16);
 }
-
-// The existing review_model field is the execution/cache identity. Cadence keeps
-// review_policy stable: an explicit paid companion cannot buy automatic admission.
-export function reviewExecutionModel(baselineModel: string, skillIdentity?: string): string {
-  return skillIdentity ? baselineModel + " [review-skill:" + skillIdentity + "]" : baselineModel;
-}
-export function reviewExecutionCacheCompatible(
-  priorModel: string | undefined,
-  currentModel: string,
-  baselineModel: string,
-): boolean {
-  // Ordinary content caching historically excludes model selection and accepts
-  // old missing-model records. Preserve that default; only an opted-in skill
-  // identity on either side introduces this extra compatibility boundary.
-  if (currentModel === baselineModel && !priorModel?.includes(" [review-skill:")) return true;
-  return priorModel === currentModel;
-}
