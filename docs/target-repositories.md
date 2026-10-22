@@ -65,7 +65,10 @@ fanout and reconciliation are not part of this configuration version.
 Configuration, selected skills and relative references use the same pinned
 revision. Bundles are limited to 64 regular UTF-8 files and 256 KiB; symlinks,
 submodules, binary files, escaping/missing Markdown references, nested skills
-and native tool-provisioning dependencies are rejected. Missing configuration and
+and native tool-provisioning dependencies are rejected. When prompt retention is
+budgeted, the complete repository/native/schema prompt must fit the existing
+per-item allocation before retention or full assessment; deterministic prompt
+overruns are not retryable. Missing configuration and
 skill blobs require pinned size metadata and object-store disk admission before
 hydration; unavailable or truncated metadata fails closed. Their digest participates
 in hydrated content-cache identity, not the global admission policy. Configured

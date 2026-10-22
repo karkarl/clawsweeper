@@ -41,13 +41,21 @@ export function createReviewRuntime(dependencies: ReviewRuntimeDependencies) {
     if (metadata.full_name?.toLowerCase() !== repo.toLowerCase())
       throw new UserFacingCommandError("Repository review configuration identity mismatch.");
     const branch = requireSafeGitBranchName(metadata.default_branch, "repository default branch");
-    const origin = run("git", ["remote", "get-url", "origin"], { cwd: openclawDir }).trim();
+    const origin = run("git", ["remote", "get-url", "origin"], { cwd: openclawDir })
+      .trim()
+      .replace(/\/$/, "")
+      .toLowerCase();
     if (
       ![
-        "https://github.com/" + repo + ".git",
-        "https://github.com/" + repo,
-        "git@github.com:" + repo + ".git",
-      ].some((url) => url.toLowerCase() === origin.toLowerCase())
+        "https://github.com/",
+        "https://github.com:443/",
+        "git@github.com:",
+        "ssh://git@github.com/",
+        "ssh://git@github.com:22/",
+        "ssh://git@ssh.github.com:443/",
+      ].some((prefix) =>
+        [repo, repo + ".git"].some((path) => (prefix + path).toLowerCase() === origin),
+      )
     )
       throw new UserFacingCommandError(
         "Repository review configuration requires the canonical target origin.",

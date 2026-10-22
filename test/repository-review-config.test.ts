@@ -619,3 +619,121 @@ test("selected native Codex skills retain the same-thread decision repair lifecy
   assert.equal(JSON.parse(readFileSync(output, "utf8")).decision, "keep_open");
   assert.equal(f.git("status", "--porcelain"), "");
 });
+
+for (const runner of ["codex", "openclaw"] as const)
+  test("final native prompt bytes are admitted before retention or assessment: " + runner, (t) => {
+    const f = fixture(t);
+    f.configure({ version: 1, skills: ["sample"], additionalPrompt: "é".repeat(8) });
+    f.skill();
+    const config = loadRepositoryReviewConfig(f.root, f.commit())!;
+    const bin = useFakeScanner(t),
+      binary = join(bin, "budget-runner");
+    const receipt = join(bin, "called.json"),
+      diagnostic = join(bin, "prompt.md");
+    const schema = join(bin, "schema.json"),
+      scratch = join(bin, "native-temp");
+    mkdirSync(scratch);
+    writeFileSync(schema, JSON.stringify({ type: "object", description: "é".repeat(20) }));
+    writeFileSync(
+      binary,
+      "#!" +
+        process.execPath +
+        String.fromCharCode(10) +
+        'const fs=require("node:fs"),args=process.argv.slice(2);const prompt=args[0]==="agent"?fs.readFileSync(args[args.indexOf("--message-file")+1],"utf8"):fs.readFileSync(0,"utf8");fs.writeFileSync(' +
+        JSON.stringify(receipt) +
+        ',JSON.stringify({prompt}));console.log(JSON.stringify({payloads:[{text:"done"}]}));',
+      { mode: 0o755 },
+    );
+    const previous = process.env.TMPDIR;
+    process.env.TMPDIR = scratch;
+    try {
+      const options = {
+        label: "prompt-budget",
+        prompt: "BASE",
+        scanSource: { kind: "prompt" as const },
+        model: "internal",
+        cwd: f.root,
+        timeoutMs: 10000,
+        repositoryReview: config,
+        diagnosticPromptPath: diagnostic,
+        env: {
+          ...process.env,
+          CLAWSWEEPER_RUNNER: runner,
+          CODEX_BIN: binary,
+          CLAWSWEEPER_OPENCLAW_BIN: binary,
+          CLAWSWEEPER_OPENCLAW_MODEL: "openai/test",
+        },
+        ...(runner === "openclaw"
+          ? { nativeWorkspace: { cwd: f.root, prompt: "PINNED NATIVE é" } }
+          : {}),
+        codexExtraArgs: ["-C", f.root, "--sandbox", "read-only", "--output-schema", schema, "-"],
+      };
+      assert.equal(runAgentProcess(options).status, 0);
+      const prompt = JSON.parse(readFileSync(receipt, "utf8")).prompt as string;
+      const bytes = Buffer.byteLength(prompt);
+      assert.ok(bytes > prompt.length);
+      assert.equal(Buffer.byteLength(readFileSync(diagnostic, "utf8")), bytes);
+      assert.equal(runAgentProcess({ ...options, promptFileBytes: bytes }).status, 0);
+      rmSync(receipt);
+      assert.throws(
+        () => runAgentProcess({ ...options, promptFileBytes: bytes - 1 }),
+        (error) => {
+          assert.match((error as Error).message, /prompt exceeded/);
+          const runtime = createReviewRuntime({} as Parameters<typeof createReviewRuntime>[0]);
+          assert.equal(runtime.codexReviewFailureRetryable(error), false);
+          return true;
+        },
+      );
+      assert.equal(existsSync(receipt), false);
+      assert.equal(existsSync(diagnostic), false);
+      assert.deepEqual(
+        fs.readdirSync(scratch).filter((name) => name.startsWith("clawsweeper-native-skills-")),
+        [],
+      );
+      assert.equal(
+        runAgentProcess({ ...options, diagnosticPromptPath: undefined, promptFileBytes: 0 }).status,
+        0,
+      );
+      assert.equal(existsSync(diagnostic), false);
+      assert.equal(f.git("status", "--porcelain"), "");
+    } finally {
+      if (previous === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = previous;
+    }
+  });
+
+test("authenticated repository preparation accepts canonical GitHub SSH URLs only", (t) => {
+  const f = fixture(t);
+  f.git("remote", "add", "origin", f.root);
+  let origin = "";
+  const runtime = createReviewRuntime({
+    targetRepo: () => "steipete/fixture",
+    ghJson: () => ({ full_name: "steipete/fixture", default_branch: "main" }),
+    run: (command: string, args: string[], options: { cwd?: string } = {}) =>
+      args.join(" ") === "remote get-url origin"
+        ? origin
+        : execFileSync(command, args, { ...options, encoding: "utf8" }),
+  } as Parameters<typeof createReviewRuntime>[0]);
+  for (const url of [
+    "https://github.com/steipete/fixture.git",
+    "https://github.com/steipete/fixture/",
+    "https://github.com:443/steipete/fixture.git",
+    "git@github.com:steipete/fixture",
+    "ssh://git@github.com/steipete/fixture.git",
+    "ssh://git@github.com:22/steipete/fixture",
+    "ssh://git@ssh.github.com:443/steipete/fixture.git",
+  ]) {
+    origin = url;
+    assert.equal(runtime.repositoryReviewConfig(f.root), undefined, url);
+  }
+  for (const url of [
+    "ssh://git@github.com.evil/steipete/fixture.git",
+    "ssh://git@github.com:443/steipete/fixture.git",
+    "ssh://git@github.com/other/fixture.git",
+    "https://github.com@evil/steipete/fixture.git",
+  ]) {
+    origin = url;
+    assert.throws(() => runtime.repositoryReviewConfig(f.root), /canonical target origin/);
+  }
+  assert.equal(f.git("status", "--porcelain"), "");
+});

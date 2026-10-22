@@ -13,6 +13,7 @@ import {
   reviewNetworkCapability,
   runAgentCheckoutInspection,
   runAgentProcess,
+  ReviewPromptBudgetError,
 } from "./agent-runner.js";
 import { AgentInputScanError, type AgentScanSource } from "./agent-input-scan.js";
 import {
@@ -697,7 +698,8 @@ ${extra}
   }
 
   function codexReviewFailureRetryable(error: unknown): boolean {
-    if (error instanceof AgentInputScanError) return false;
+    if (error instanceof AgentInputScanError || error instanceof ReviewPromptBudgetError)
+      return false;
     if (!openClawCodexSourcePreparationFailureRetryable(error)) return false;
     return error instanceof CodexReviewError ? error.retryable : true;
   }
@@ -903,9 +905,7 @@ ${extra}
       options.promptFileBytes > 0 &&
       Buffer.byteLength(prompt) > options.promptFileBytes
     ) {
-      throw new UserFacingCommandError(
-        `Review prompt exceeded its ${options.promptFileBytes}-byte output budget.`,
-      );
+      throw new ReviewPromptBudgetError(options.promptFileBytes);
     }
     const pull = asRecord(options.context.pullRequest);
     const scanSource: AgentScanSource =
@@ -979,6 +979,9 @@ ${extra}
       ...(native ? { nativeWorkspace: native } : {}),
       scanSource,
       ...(options.promptFileBytes === 0 ? {} : { diagnosticPromptPath: promptPath }),
+      ...(options.promptFileBytes === undefined
+        ? {}
+        : { promptFileBytes: options.promptFileBytes }),
       label: `review-${options.item.number}-attempt-1`,
       prompt,
       model: options.model,

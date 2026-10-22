@@ -1,4 +1,5 @@
 import { randomInt } from "node:crypto";
+import { UserFacingCommandError } from "./command.js";
 import { spawnSync } from "node:child_process";
 import { lstatSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -14,11 +15,19 @@ import {
 
 export type AgentRunner = "codex" | "openclaw";
 
+export class ReviewPromptBudgetError extends UserFacingCommandError {
+  constructor(bytes: number) {
+    super(`Review prompt exceeded its ${bytes}-byte output budget.`);
+    this.name = "ReviewPromptBudgetError";
+  }
+}
+
 export interface RunAgentProcessOptions {
   label: string;
   prompt: string;
   // Generated diagnostic copy only; never an original input or requested export.
   diagnosticPromptPath?: string;
+  promptFileBytes?: number;
   scanSource: AgentScanSource;
   model: string;
   reasoningEffort?: string;
@@ -118,9 +127,6 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
     runner === "openclaw" && schemaPath
       ? `${options.prompt.trimEnd()}\n\n## Output schema\n\nReturn one JSON object that matches this JSON Schema. The field descriptions are part of the review contract.\n\n\`\`\`json\n${readFileSync(schemaPath, "utf8").trim()}\n\`\`\`\n`
       : options.prompt;
-  if (options.diagnosticPromptPath) {
-    writeFileSync(options.diagnosticPromptPath, prompt, { mode: 0o600, flag: "wx" });
-  }
   options = { ...options, timeoutMs: options.timeoutMs - (Date.now() - startedAt) };
   if (options.timeoutMs <= 0) {
     if (options.diagnosticPromptPath) rmSync(options.diagnosticPromptPath, { force: true });
@@ -146,8 +152,7 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
           codexExtraArgs: extraArgs,
         };
       }
-      if (native && options.diagnosticPromptPath)
-        writeFileSync(options.diagnosticPromptPath, options.prompt, { mode: 0o600 });
+      retainDiagnosticPrompt(options, options.prompt);
       const args = codexAgentArgs(options);
       const managedOutput =
         options.outputLastMessageBytes !== undefined && outputPath !== undefined;
@@ -176,6 +181,7 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
     }
   }
 
+  retainDiagnosticPrompt(options, prompt);
   const model = openclawModel(options.env);
   const rawResult = runOpenclawProcess({
     label: options.label,
@@ -215,6 +221,17 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
     );
   }
   return result;
+}
+
+function retainDiagnosticPrompt(options: RunAgentProcessOptions, prompt: string): void {
+  if (
+    options.promptFileBytes !== undefined &&
+    options.promptFileBytes > 0 &&
+    Buffer.byteLength(prompt) > options.promptFileBytes
+  )
+    throw new ReviewPromptBudgetError(options.promptFileBytes);
+  if (options.diagnosticPromptPath)
+    writeFileSync(options.diagnosticPromptPath, prompt, { mode: 0o600, flag: "wx" });
 }
 
 export function runAgentCheckoutInspection(options: {
