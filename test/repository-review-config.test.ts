@@ -1,0 +1,499 @@
+import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve, sep } from "node:path";
+import test, { type TestContext } from "node:test";
+import { pathToFileURL } from "node:url";
+import {
+  loadLocalRepositoryReviewConfig,
+  loadRepositoryReviewConfig,
+  materializeNativeReviewSkills,
+  repositoryReviewContentDigest,
+} from "../dist/repository-review-config.js";
+import { runAgentProcess } from "../dist/agent-runner.js";
+import { createReviewRuntime } from "../dist/clawsweeper-review-runtime.js";
+import { reviewContentCacheHit, shouldReviewItem } from "../dist/scheduler-policy.js";
+import { useFakeScanner } from "./agent-input-scan-helpers.ts";
+
+function fixture(t: TestContext) {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-native-config-test-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const git = (...args: string[]) =>
+    execFileSync("git", args, {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  git("init", "-q", "-b", "main");
+  const put = (path: string, text: string | Buffer) => {
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    writeFileSync(join(root, path), text);
+  };
+  const commit = () => {
+    git("add", "-A");
+    git(
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@example.invalid",
+      "commit",
+      "-qm",
+      "test: synthetic native configuration",
+      "-m",
+      "Co-authored-by: RomneyDa <6581799+RomneyDa@users.noreply.github.com>",
+    );
+    return git("rev-parse", "HEAD");
+  };
+  put("source.txt", "ordinary reviewed source");
+  const empty = commit();
+  const configure = (
+    value: unknown = { version: 1, skills: ["sample"], additionalPrompt: "APPENDED" },
+  ) => put(".clawsweeper/review.json", JSON.stringify(value));
+  const skill = (body = "Read [contract](references/contract.md).") => {
+    put(
+      ".agents/skills/sample/SKILL.md",
+      "---\nname: sample\ndescription: Sample review\n---\n" + body,
+    );
+    put(".agents/skills/sample/references/contract.md", "PINNED-REFERENCE");
+  };
+  return { root, git, put, commit, empty, configure, skill };
+}
+
+test("missing and empty configuration preserve ordinary cache identity", (t) => {
+  const f = fixture(t);
+  assert.equal(loadRepositoryReviewConfig(f.root, f.empty), undefined);
+  assert.equal(loadLocalRepositoryReviewConfig(f.root, "main"), undefined);
+  assert.equal(repositoryReviewContentDigest("ordinary"), "ordinary");
+  f.configure({ version: 1 });
+  assert.equal(loadRepositoryReviewConfig(f.root, f.commit()), undefined);
+});
+
+test("pinned config, skill and references ignore PR-head edits and bind cache identity", (t) => {
+  const f = fixture(t);
+  f.configure();
+  f.skill();
+  const main = f.commit();
+  f.configure({ version: 1, skills: ["../escape"] });
+  f.skill("HEAD-OVERRIDE");
+  f.commit();
+  const config = loadLocalRepositoryReviewConfig(f.root, main)!;
+  assert.equal(config.revision, main);
+  assert.equal(config.additionalPrompt, "APPENDED");
+  assert.equal(config.files.length, 2);
+  const native = materializeNativeReviewSkills(config, f.root);
+  assert.equal(
+    readFileSync(join(native.cwd, ".agents/skills/sample/references/contract.md"), "utf8"),
+    "PINNED-REFERENCE",
+  );
+  assert.equal(
+    readFileSync(join(native.cwd, ".agents/skills/sample/SKILL.md"), "utf8"),
+    f.git("show", main + ":.agents/skills/sample/SKILL.md"),
+  );
+  assert.notEqual(repositoryReviewContentDigest("ordinary", config), "ordinary");
+  assert.equal(config.digest, loadRepositoryReviewConfig(f.root, main)!.digest);
+  native.cleanup();
+  assert.equal(existsSync(native.cwd), false);
+  f.put(".agents/skills/sample/references/contract.md", "CHANGED-REFERENCE");
+  f.configure();
+  assert.notEqual(loadRepositoryReviewConfig(f.root, f.commit())!.digest, config.digest);
+  assert.equal(f.git("status", "--porcelain"), "");
+});
+
+for (const value of [
+  { version: 2 },
+  { version: 1, skills: null },
+  { version: 1, additionalPrompt: null },
+  { version: 1, multiModel: {} },
+  { version: 1, skills: ["../sample"] },
+  { version: 1, skills: ["sample", "sample"] },
+  { version: 1, additionalPrompt: "x".repeat(5001) },
+]) {
+  test("reject invalid repository configuration " + JSON.stringify(value).slice(0, 90), (t) => {
+    const f = fixture(t);
+    f.configure(value);
+    assert.throws(() => loadRepositoryReviewConfig(f.root, f.commit()));
+  });
+}
+
+test("offline configuration uses the operator base despite head deletion and no remote", (t) => {
+  const f = fixture(t);
+  f.configure();
+  f.skill();
+  const trusted = f.commit();
+  f.git("checkout", "-qb", "pull-head");
+  rmSync(join(f.root, ".clawsweeper/review.json"));
+  f.commit();
+  assert.equal(f.git("remote"), "");
+  assert.equal(loadLocalRepositoryReviewConfig(f.root, "main")!.revision, trusted);
+  assert.equal(loadLocalRepositoryReviewConfig(f.root, "main")!.additionalPrompt, "APPENDED");
+  for (const ref of ["", "missing-base", "--help"]) {
+    assert.throws(() => loadLocalRepositoryReviewConfig(f.root, ref), /valid trusted --base/);
+  }
+});
+
+test("offline configuration uses the base tip rather than a head-dependent merge-base", (t) => {
+  const f = fixture(t);
+  f.git("checkout", "-qb", "pull-head");
+  f.configure({ version: 1, additionalPrompt: "HEAD-INSTRUCTION" });
+  f.commit();
+  f.git("checkout", "main");
+  f.configure({ version: 1, additionalPrompt: "TRUSTED-TIP" });
+  const trusted = f.commit();
+  f.git("checkout", "pull-head");
+  assert.equal(f.git("merge-base", "main", "HEAD"), f.empty);
+  const config = loadLocalRepositoryReviewConfig(f.root, "main")!;
+  assert.equal(config.revision, trusted);
+  assert.equal(config.additionalPrompt, "TRUSTED-TIP");
+});
+
+for (const kind of [
+  "missing",
+  "escape",
+  "binary",
+  "oversize",
+  "symlink",
+  "tools",
+  "nested",
+] as const) {
+  test(
+    "reject unsafe native bundle " + kind,
+    { skip: kind === "symlink" && process.platform === "win32" },
+    (t) => {
+      const f = fixture(t);
+      f.configure();
+      f.skill();
+      if (kind === "missing") rmSync(join(f.root, ".agents/skills/sample/references/contract.md"));
+      if (kind === "escape") f.skill("Read [outside](../../outside.md).");
+      if (kind === "binary")
+        f.put(".agents/skills/sample/references/contract.md", Buffer.from([0, 255]));
+      if (kind === "oversize")
+        f.put(".agents/skills/sample/references/contract.md", "x".repeat(256 * 1024));
+      if (kind === "symlink")
+        symlinkSync("../../source.txt", join(f.root, ".agents/skills/sample/link"));
+      if (kind === "tools")
+        f.put(".agents/skills/sample/agents/openai.yaml", "dependencies: { tools: [] }");
+      if (kind === "nested")
+        f.put(
+          ".agents/skills/sample/nested/SKILL.md",
+          "---\nname: rogue\ndescription: rogue\n---\nrogue",
+        );
+      assert.throws(() => loadRepositoryReviewConfig(f.root, f.commit()));
+    },
+  );
+}
+
+test("Codex receives native bundle separately, scanners receive selected bytes, and cleanup runs on failure", (t) => {
+  const f = fixture(t);
+  f.configure();
+  f.skill();
+  const config = loadRepositoryReviewConfig(f.root, f.commit())!;
+  const bin = useFakeScanner(
+    t,
+    'assert.ok(inputs.some(({bytes})=>bytes.toString().includes("PINNED-REFERENCE"))); assert.ok(inputs.some(({bytes})=>bytes.toString()==="APPENDED"));',
+  );
+  const binary = join(bin, "codex-fixture");
+  const receipt = join(bin, "receipt.json");
+  writeFileSync(
+    binary,
+    '#!/usr/bin/env node\nconst fs=require("node:fs"); fs.writeFileSync(process.env.RECEIPT,JSON.stringify({cwd:process.cwd(),args:process.argv.slice(2),prompt:fs.readFileSync(0,"utf8"),skill:fs.readFileSync(".agents/skills/sample/SKILL.md","utf8")})); process.exit(7);',
+    { mode: 0o755 },
+  );
+  const result = runAgentProcess({
+    label: "native-fixture",
+    prompt: "BASE-CONTRACT",
+    scanSource: { kind: "prompt" },
+    model: "internal",
+    cwd: f.root,
+    env: { ...process.env, CODEX_BIN: binary, RECEIPT: receipt },
+    timeoutMs: 10_000,
+    repositoryReview: config,
+    codexExtraArgs: ["-C", f.root, "--sandbox", "read-only", "-"],
+  });
+  assert.equal(result.status, 7);
+  const sent = JSON.parse(readFileSync(receipt, "utf8"));
+  assert.notEqual(sent.cwd, f.root);
+  assert.equal(sent.args[sent.args.indexOf("-C") + 1], sent.cwd);
+  assert.equal(sent.args[sent.args.indexOf("--sandbox") + 1], "read-only");
+  assert.ok(sent.args.includes("project_root_markers=[]"));
+  assert.ok(sent.prompt.startsWith("BASE-CONTRACT"));
+  assert.ok(sent.prompt.includes("[$sample]("));
+  assert.ok(sent.prompt.includes("APPENDED"));
+  assert.ok(!sent.prompt.includes("Read [contract]")); // native body was not pasted into caller prompt
+  assert.ok(sent.skill.includes("Read [contract]"));
+  assert.equal(existsSync(sent.cwd), false);
+  assert.equal(f.git("status", "--porcelain"), "");
+});
+
+test("OpenClaw selected skills without an owned workspace fail before scanner or inference", (t) => {
+  const f = fixture(t);
+  f.configure();
+  f.skill();
+  assert.throws(
+    () =>
+      runAgentProcess({
+        label: "unsupported",
+        prompt: "base",
+        scanSource: { kind: "prompt" },
+        model: "internal",
+        cwd: f.root,
+        env: { CLAWSWEEPER_RUNNER: "openclaw" },
+        timeoutMs: 1000,
+        repositoryReview: loadRepositoryReviewConfig(f.root, f.commit()),
+      }),
+    /isolated owned native workspace/,
+  );
+});
+
+test("compiled local review rejects invalid trusted base despite head deletion and no remote", (t) => {
+  const f = fixture(t);
+  f.configure({ version: 2 });
+  f.commit();
+  f.git("checkout", "-qb", "pull-head");
+  rmSync(join(f.root, ".clawsweeper/review.json"));
+  f.put("source.txt", "changed reviewed source");
+  f.commit();
+  const result = spawnSync(
+    process.execPath,
+    [
+      resolve("dist/clawsweeper-local.js"),
+      "review",
+      "--target-repo",
+      "steipete/target",
+      "--target-dir",
+      f.root,
+      "--base",
+      "main",
+      "--result-format",
+      "json",
+    ],
+    {
+      encoding: "utf8",
+      env: { ...process.env, CODEX_BIN: join(f.root, "must-not-launch") },
+      timeout: 10_000,
+    },
+  );
+  assert.equal(result.status, 1, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.status, "failed");
+  assert.deepEqual(output.reports, []);
+  assert.match(output.error.message, /Unsupported repository review configuration/);
+  assert.equal(f.git("status", "--porcelain"), "");
+});
+
+test("OpenClaw owned parent isolates native skills, preserves source and cleans failed preflight", (t) => {
+  const f = fixture(t);
+  f.configure();
+  f.skill();
+  const trusted = f.commit();
+  const config = loadRepositoryReviewConfig(f.root, trusted)!;
+  f.skill("HEAD-OVERRIDE");
+  const head = f.commit();
+  const owned = mkdtempSync(join(tmpdir(), "clawsweeper-owned-native-test-"));
+  t.after(() => rmSync(owned, { recursive: true, force: true }));
+  const source = join(owned, "42");
+  f.git("worktree", "add", "--detach", source, head);
+  const native = materializeNativeReviewSkills(config, source, owned);
+  assert.equal(native.cwd, owned);
+  assert.ok(
+    readFileSync(join(owned, ".agents/skills/sample/SKILL.md"), "utf8").includes("Read [contract]"),
+  );
+  assert.ok(
+    readFileSync(join(source, ".agents/skills/sample/SKILL.md"), "utf8").includes("HEAD-OVERRIDE"),
+  );
+  const bin = useFakeScanner(t);
+  const binary = join(bin, "openclaw-fixture");
+  const receipt = join(bin, "native.json");
+  writeFileSync(
+    binary,
+    '#!/usr/bin/env node\nconst fs=require("node:fs"); const config=JSON.parse(fs.readFileSync(process.env.OPENCLAW_CONFIG_PATH,"utf8")); fs.writeFileSync(process.env.OPENCLAW_TEST_RECORD,JSON.stringify({config,cwd:process.env.OPENCLAW_WORKSPACE_DIR,prompt:fs.readFileSync(process.argv[process.argv.indexOf("--message-file")+1],"utf8")})); process.exit(7);',
+    { mode: 0o755 },
+  );
+  const env = {
+    ...process.env,
+    CLAWSWEEPER_RUNNER: "openclaw",
+    CLAWSWEEPER_OPENCLAW_MODEL: "openai/test",
+    CLAWSWEEPER_OPENCLAW_BIN: binary,
+    OPENCLAW_TEST_RECORD: receipt,
+  };
+  const result = runAgentProcess({
+    label: "native-test",
+    prompt: "BASE",
+    scanSource: { kind: "prompt" },
+    model: "test",
+    cwd: source,
+    env,
+    timeoutMs: 10_000,
+    repositoryReview: config,
+    nativeWorkspace: native,
+  });
+  assert.equal(result.status, 7);
+  const sent = JSON.parse(readFileSync(receipt, "utf8"));
+  assert.equal(sent.cwd, owned);
+  assert.deepEqual(sent.config.agents.defaults.skills, ["sample"]);
+  assert.equal(sent.config.tools.fs.workspaceOnly, true);
+  assert.ok(sent.prompt.includes("APPENDED"));
+  native.cleanup();
+  assert.equal(existsSync(join(owned, ".agents")), false);
+  assert.equal(existsSync(source), true);
+  const runtime = createReviewRuntime({
+    ensureDir: (path: string) => mkdirSync(path, { recursive: true }),
+    run: (command: string, args: string[], options: { cwd?: string } = {}) =>
+      execFileSync(command, args, { ...options, encoding: "utf8" }),
+    untrustedCodexEnv: () => env,
+    decisionSchemaPath: resolve("schema/clawsweeper-decision.schema.json"),
+  } as Parameters<typeof createReviewRuntime>[0]);
+  assert.throws(
+    () =>
+      runtime.runCodexForTest({
+        item: { repo: "steipete/fixture", number: 42, kind: "pull_request" },
+        context: { pullRequest: { base: { sha: trusted }, head: { sha: head } } },
+        repositoryReview: config,
+        openclawDir: source,
+        reviewTreeRoot: owned,
+        prompt: "BASE",
+        workDir: join(bin, "output"),
+        reviewEnv: env,
+        timeoutMs: 10_000,
+        resultFileBytes: 4096,
+      } as Parameters<typeof runtime.runCodexForTest>[0]),
+    /Read-only checkout inspection failed/,
+  );
+  const probe = JSON.parse(readFileSync(receipt, "utf8"));
+  assert.equal(probe.cwd, owned);
+  assert.deepEqual(probe.config.agents.defaults.skills, []);
+  assert.equal(probe.config.tools.fs.workspaceOnly, true);
+  assert.ok(JSON.parse(probe.prompt.match(/^Path: (.+)$/m)[1]).startsWith("42" + sep));
+  assert.equal(existsSync(join(owned, ".agents")), false);
+  assert.equal(
+    execFileSync("git", ["status", "--porcelain"], { cwd: source, encoding: "utf8" }),
+    "",
+  );
+  const cachedProbe = runtime.runReviewCheckoutInspection({
+    itemNumber: 42,
+    openclawDir: source,
+    timeoutMs: 10_000,
+    scanSource: { kind: "committed", baseSha: trusted, headSha: head },
+    initialPrompt: "cached review context",
+    disableSkills: true,
+  });
+  assert.equal(cachedProbe.status, 7);
+  const cached = JSON.parse(readFileSync(receipt, "utf8"));
+  assert.equal(cached.cwd, source);
+  assert.deepEqual(cached.config.agents.defaults.skills, []);
+  assert.equal(cached.config.tools.fs.workspaceOnly, true);
+  const pinnedSource = mkdtempSync(join(tmpdir(), "clawsweeper-pinned-codex-test-"));
+  t.after(() => rmSync(pinnedSource, { recursive: true, force: true }));
+  symlinkSync(pinnedSource, join(owned, "codex"), "dir");
+  assert.throws(() => materializeNativeReviewSkills(config, source, owned), /isolated owned/);
+  assert.throws(
+    () => materializeNativeReviewSkills(config, source, owned, f.root),
+    /isolated owned/,
+  );
+  const withSibling = materializeNativeReviewSkills(config, source, owned, pinnedSource);
+  assert.equal(withSibling.cwd, owned);
+  withSibling.cleanup();
+  assert.equal(existsSync(join(owned, "codex")), true);
+  assert.equal(existsSync(source), true);
+  rmSync(join(owned, "codex"));
+  mkdirSync(join(owned, "codex"));
+  assert.throws(
+    () => materializeNativeReviewSkills(config, source, owned, pinnedSource),
+    /isolated owned/,
+  );
+  rmSync(join(owned, "codex"), { recursive: true });
+  mkdirSync(join(owned, "other-source"));
+  assert.throws(() => materializeNativeReviewSkills(config, source, owned), /isolated owned/);
+  assert.equal(existsSync(join(owned, ".agents")), false);
+});
+
+test("repository config invalidates content reuse without changing admission policy", (t) => {
+  const f = fixture(t);
+  f.configure({ version: 1, additionalPrompt: "FIRST" });
+  const first = loadRepositoryReviewConfig(f.root, f.commit())!;
+  f.configure({ version: 1, additionalPrompt: "SECOND" });
+  const second = loadRepositoryReviewConfig(f.root, f.commit())!;
+  const item = {
+    repo: "steipete/fixture",
+    number: 1,
+    kind: "pull_request" as const,
+    createdAt: "2026-10-20T00:00:00Z",
+    updatedAt: "2026-10-20T00:00:00Z",
+  };
+  const review = {
+    reviewStatus: "complete",
+    decision: "keep_open",
+    reviewPolicy: "host-policy",
+    reviewedAt: "2026-10-22T00:00:00Z",
+    lastFullReviewAt: "2026-10-22T00:00:00Z",
+    itemUpdatedAt: item.updatedAt,
+    lastFullReviewDecision: "keep_open",
+    contentDigest: repositoryReviewContentDigest("item-content", first),
+  };
+  const now = Date.parse(review.reviewedAt) + 60_000;
+  assert.equal(shouldReviewItem(item, review, now, "host-policy"), false);
+  const cached = (config?: typeof first) =>
+    reviewContentCacheHit({
+      review,
+      reviewPolicy: "host-policy",
+      contentDigest: repositoryReviewContentDigest("item-content", config),
+      now,
+      explicitDispatch: false,
+      maintainerRequest: false,
+    });
+  assert.equal(cached(first), true);
+  assert.equal(cached(second), false);
+  assert.equal(cached(undefined), false);
+  assert.equal(shouldReviewItem(item, review, now, "host-policy"), false);
+});
+
+test("hosted blob:none hydration batches the full bounded native bundle", (t) => {
+  const f = fixture(t);
+  f.configure();
+  f.skill();
+  for (let i = 0; i < 62; i++)
+    f.put(".agents/skills/sample/references/note-" + i + ".md", "unique reference " + i);
+  const revision = f.commit();
+  f.git("config", "uploadpack.allowFilter", "true");
+  const clone = mkdtempSync(join(tmpdir(), "clawsweeper-native-partial-"));
+  t.after(() => rmSync(clone, { recursive: true, force: true }));
+  execFileSync(
+    "git",
+    ["clone", "--filter=blob:none", "--no-checkout", pathToFileURL(f.root).href, clone],
+    { stdio: "pipe" },
+  );
+  const missing = () =>
+    execFileSync("git", ["rev-list", "--objects", "--missing=print", revision], {
+      cwd: clone,
+      encoding: "utf8",
+    })
+      .split("\n")
+      .filter((line) => line.startsWith("?")).length;
+  const before = missing();
+  assert.ok(before >= 65);
+  assert.throws(() => loadRepositoryReviewConfig(clone, revision), /Cannot read pinned/);
+  const trace = join(clone, ".git", "fetch.trace");
+  const priorTrace = process.env.GIT_TRACE;
+  try {
+    process.env.GIT_TRACE = trace;
+    const config = loadRepositoryReviewConfig(clone, revision, { allowFetch: true })!;
+    assert.equal(config.files.length, 64);
+    assert.equal(config.digest, loadRepositoryReviewConfig(f.root, revision)!.digest);
+    assert.equal(missing(), before - 65);
+    const uploads = readFileSync(trace, "utf8")
+      .split("\n")
+      .filter((line) => line.includes("built-in: git upload-pack"));
+    assert.equal(uploads.length, 2, readFileSync(trace, "utf8"));
+  } finally {
+    if (priorTrace === undefined) delete process.env.GIT_TRACE;
+    else process.env.GIT_TRACE = priorTrace;
+  }
+});

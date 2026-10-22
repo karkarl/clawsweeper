@@ -16,6 +16,10 @@ import {
 } from "./agent-runner.js";
 import { AgentInputScanError, type AgentScanSource } from "./agent-input-scan.js";
 import {
+  materializeNativeReviewSkills,
+  type RepositoryReviewConfig,
+} from "./repository-review-config.js";
+import {
   omitReviewedFixtureReferences,
   serializeReviewContext,
 } from "./agent-input-scan-fixtures.js";
@@ -770,6 +774,8 @@ ${extra}
     timeoutMs: number;
     scanSource: AgentScanSource;
     initialPrompt: string;
+    nativeWorkspace?: string;
+    disableSkills?: boolean;
   }): CodexProcessResult {
     const dirtyBefore = openclawDirtyStatus(options.openclawDir);
     if (dirtyBefore) {
@@ -788,6 +794,8 @@ ${extra}
       scanSource: options.scanSource,
       initialPrompt: options.initialPrompt,
       cwd: options.openclawDir,
+      ...(options.nativeWorkspace ? { nativeWorkspace: options.nativeWorkspace } : {}),
+      ...(options.disableSkills ? { disableSkills: true } : {}),
       env: untrustedCodexEnv({
         ghToken: process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,
         preserveCodexAuth: options.preserveCodexAuth,
@@ -809,7 +817,8 @@ ${extra}
     return env;
   }
 
-  function runCodex(options: {
+  type ReviewRunOptions = {
+    repositoryReview?: RepositoryReviewConfig;
     item: Item;
     context: ItemContext;
     git: GitInfo;
@@ -832,12 +841,38 @@ ${extra}
     streamFileBytes?: number;
     quietLogs?: boolean;
     extraCodexConfig?: string[];
-  }): Decision {
+  };
+
+  function runCodex(options: ReviewRunOptions): Decision {
+    let native: ReturnType<typeof materializeNativeReviewSkills> | undefined;
+    try {
+      return runCodexInWorkspace(options, (preparedCodexSource) => {
+        if (!options.reviewTreeRoot || !options.repositoryReview)
+          throw new Error("Native OpenClaw skills require an isolated owned review tree.");
+        native = materializeNativeReviewSkills(
+          options.repositoryReview,
+          options.openclawDir,
+          options.reviewTreeRoot,
+          preparedCodexSource,
+        );
+        return native;
+      });
+    } finally {
+      native?.cleanup();
+    }
+  }
+
+  function runCodexInWorkspace(
+    options: ReviewRunOptions,
+    prepareNative: (
+      preparedCodexSource?: string,
+    ) => ReturnType<typeof materializeNativeReviewSkills>,
+  ): Decision {
     if (!Number.isSafeInteger(options.resultFileBytes) || options.resultFileBytes <= 0) {
       throw new UserFacingCommandError("Review result output requires a positive byte limit.");
     }
     const startedAt = Date.now();
-    prepareOpenClawCodexSourceForReview({
+    const preparedCodexSource = prepareOpenClawCodexSourceForReview({
       targetRepo: options.item.repo,
       reviewDir: options.openclawDir,
       ...(options.reviewTreeRoot === undefined ? {} : { reviewTreeRoot: options.reviewTreeRoot }),
@@ -881,9 +916,22 @@ ${extra}
             headSha: nonBlankStringOrUndefined(asRecord(pull.head).sha) ?? "",
           }
         : { kind: "prompt" };
+    let native: ReturnType<typeof materializeNativeReviewSkills> | undefined;
+    if (options.repositoryReview?.skills.length && agentRunner(codexEnv) === "openclaw") {
+      try {
+        native = prepareNative(preparedCodexSource);
+      } catch (error) {
+        throw new CodexReviewError({
+          message: error instanceof Error ? error.message : "Native skill workspace unavailable.",
+          status: null,
+          retryable: false,
+        });
+      }
+    }
     const checkoutInspection = runReviewCheckoutInspection({
       scanSource,
       initialPrompt: prompt,
+      ...(native ? { nativeWorkspace: native.cwd } : {}),
       itemNumber: options.item.number,
       openclawDir: options.openclawDir,
       timeoutMs: options.timeoutMs - (Date.now() - startedAt),
@@ -927,6 +975,8 @@ ${extra}
     }
     const processStartedAt = Date.now();
     const result = runAgentProcess({
+      ...(options.repositoryReview ? { repositoryReview: options.repositoryReview } : {}),
+      ...(native ? { nativeWorkspace: native } : {}),
       scanSource,
       ...(options.promptFileBytes === 0 ? {} : { diagnosticPromptPath: promptPath }),
       label: `review-${options.item.number}-attempt-1`,

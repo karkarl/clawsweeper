@@ -1,12 +1,16 @@
 import { randomInt } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { lstatSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { codexModelArgs, redactInternalCodexModel } from "./codex-env.js";
 import { runCodexProcess, type CodexProcessResult } from "./codex-process.js";
 import { runOpenclawProcess } from "./openclaw-process.js";
 import { AgentInputScanError, scanAgentInput, type AgentScanSource } from "./agent-input-scan.js";
 import type { DecisionRepairOptions } from "./review-decision-repair.js";
+import {
+  materializeNativeReviewSkills,
+  type RepositoryReviewConfig,
+} from "./repository-review-config.js";
 
 export type AgentRunner = "codex" | "openclaw";
 
@@ -29,6 +33,8 @@ export interface RunAgentProcessOptions {
   codexExtraArgs?: readonly string[];
   // Codex only: one repair turn on the same thread when the final decision fails validation.
   decisionRepair?: DecisionRepairOptions;
+  repositoryReview?: RepositoryReviewConfig;
+  nativeWorkspace?: { cwd: string; prompt: string };
 }
 
 export function agentRunner(env: NodeJS.ProcessEnv = process.env): AgentRunner {
@@ -60,6 +66,10 @@ export function reviewNetworkCapability(
 export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessResult {
   if (options.diagnosticPromptPath) rmSync(options.diagnosticPromptPath, { force: true });
   const runner = agentRunner(options.env);
+  if (runner === "openclaw" && options.repositoryReview?.skills.length && !options.nativeWorkspace)
+    throw new Error(
+      "Selected OpenClaw skills require an isolated owned native workspace; no skill workflow ran.",
+    );
   if (runner === "openclaw") openclawModel(options.env);
   const startedAt = Date.now();
   const outputPath = codexOutputLastMessagePath(options.codexExtraArgs);
@@ -81,7 +91,27 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
     source: options.scanSource,
     timeoutMs: options.timeoutMs,
     ...(schemaPath ? { schemaPath } : {}),
+    ...(options.repositoryReview
+      ? {
+          additionalBytes: [
+            Buffer.from(options.repositoryReview.configText),
+            Buffer.from(options.repositoryReview.additionalPrompt),
+            ...options.repositoryReview.files.map((file) => Buffer.from(file.text)),
+          ],
+        }
+      : {}),
   });
+  if (options.repositoryReview?.additionalPrompt) {
+    options = {
+      ...options,
+      prompt:
+        options.prompt +
+        "\n\n## Repository additional instructions (subordinate to the review contract)\n" +
+        options.repositoryReview.additionalPrompt,
+    };
+  }
+  if (runner === "openclaw" && options.nativeWorkspace)
+    options = { ...options, prompt: options.prompt + "\n\n" + options.nativeWorkspace.prompt };
   // OpenClaw has no structured-output option, so it reads the same schema file that Codex
   // receives through --output-schema as a prompt section.
   const prompt =
@@ -97,28 +127,50 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
     throw new AgentInputScanError("deadline");
   }
   if (runner === "codex") {
-    const args = codexAgentArgs(options);
-    const managedOutput = options.outputLastMessageBytes !== undefined && outputPath !== undefined;
-    return runCodexProcess({
-      args: managedOutput ? managedCodexStdoutArgs(args) : args,
-      cwd: options.cwd,
-      env: options.env,
-      input: options.prompt,
-      timeoutMs: options.timeoutMs,
-      ...(options.tailBytes === undefined ? {} : { tailBytes: options.tailBytes }),
-      ...(options.outputFileBytes === undefined
-        ? {}
-        : { outputFileBytes: options.outputFileBytes }),
-      ...(managedOutput
-        ? {
-            outputLastMessagePath: outputPath,
-            outputLastMessageBytes: options.outputLastMessageBytes,
-          }
-        : {}),
-      ...(options.stdoutPath ? { stdoutPath: options.stdoutPath } : {}),
-      ...(options.stderrPath ? { stderrPath: options.stderrPath } : {}),
-      ...(options.decisionRepair ? { decisionRepair: options.decisionRepair } : {}),
-    });
+    const native = options.repositoryReview?.skills.length
+      ? materializeNativeReviewSkills(options.repositoryReview, options.cwd)
+      : undefined;
+    try {
+      if (native) {
+        const extraArgs = [...(options.codexExtraArgs ?? [])];
+        for (let i = 0; i < extraArgs.length; i++) {
+          if (extraArgs[i] === "-C" || extraArgs[i] === "--cd") extraArgs[++i] = native.cwd;
+        }
+        options = {
+          ...options,
+          cwd: native.cwd,
+          prompt: options.prompt + "\n\n" + native.prompt,
+          codexExtraArgs: [...extraArgs, "--skip-git-repo-check", "-c", "project_root_markers=[]"],
+        };
+      }
+      if (native && options.diagnosticPromptPath)
+        writeFileSync(options.diagnosticPromptPath, options.prompt, { mode: 0o600 });
+      const args = codexAgentArgs(options);
+      const managedOutput =
+        options.outputLastMessageBytes !== undefined && outputPath !== undefined;
+      return runCodexProcess({
+        args: managedOutput ? managedCodexStdoutArgs(args) : args,
+        cwd: options.cwd,
+        env: options.env,
+        input: options.prompt,
+        timeoutMs: options.timeoutMs,
+        ...(options.tailBytes === undefined ? {} : { tailBytes: options.tailBytes }),
+        ...(options.outputFileBytes === undefined
+          ? {}
+          : { outputFileBytes: options.outputFileBytes }),
+        ...(managedOutput
+          ? {
+              outputLastMessagePath: outputPath,
+              outputLastMessageBytes: options.outputLastMessageBytes,
+            }
+          : {}),
+        ...(options.stdoutPath ? { stdoutPath: options.stdoutPath } : {}),
+        ...(options.stderrPath ? { stderrPath: options.stderrPath } : {}),
+        ...(options.decisionRepair ? { decisionRepair: options.decisionRepair } : {}),
+      });
+    } finally {
+      native?.cleanup();
+    }
   }
 
   const model = openclawModel(options.env);
@@ -127,7 +179,10 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
     prompt,
     model,
     ...(options.reasoningEffort?.trim() ? { reasoningEffort: options.reasoningEffort.trim() } : {}),
-    cwd: options.cwd,
+    cwd: options.nativeWorkspace?.cwd ?? options.cwd,
+    ...(options.nativeWorkspace
+      ? { skillFilter: options.repositoryReview!.skills.map((skill) => skill.name) }
+      : {}),
     env: options.env,
     timeoutMs: options.timeoutMs,
     ...(options.tailBytes === undefined ? {} : { tailBytes: options.tailBytes }),
@@ -166,6 +221,8 @@ export function runAgentCheckoutInspection(options: {
   scanSource: AgentScanSource;
   initialPrompt: string;
   schemaPath?: string;
+  nativeWorkspace?: string;
+  disableSkills?: boolean;
 }): CodexProcessResult {
   const deadlineAt = Date.now() + options.timeoutMs;
   const remainingMs = () => {
@@ -200,9 +257,12 @@ export function runAgentCheckoutInspection(options: {
         new Error("Checkout inspection could not select a tracked text line."),
       );
     }
+    const challengePath = options.nativeWorkspace
+      ? relative(options.nativeWorkspace, join(options.cwd, challenge.path))
+      : challenge.path;
     const prompt = [
       "Use the read tool to inspect the workspace-relative file below.",
-      `Path: ${JSON.stringify(challenge.path)}`,
+      `Path: ${JSON.stringify(challengePath)}`,
       `Return exactly line ${challenge.lineNumber} with surrounding whitespace removed.`,
       "Do not add quotes, code fences, or commentary.",
     ].join("\n");
@@ -218,10 +278,11 @@ export function runAgentCheckoutInspection(options: {
       label: "checkout-inspection",
       prompt,
       model: openclawModel(env),
-      cwd: options.cwd,
+      cwd: options.nativeWorkspace ?? options.cwd,
+      ...(options.nativeWorkspace || options.disableSkills ? { skillFilter: [] } : {}),
       env,
       timeoutMs: Math.min(remainingMs(), 30_000),
-      checkoutInspection: { expectedText: challenge.text, expectedPath: challenge.path },
+      checkoutInspection: { expectedText: challenge.text, expectedPath: challengePath },
     });
   }
   scanAgentInput({

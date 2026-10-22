@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { dirname, join, resolve } from "node:path";
 import { ReviewSourcePreparationError } from "./review-source-preparation.js";
 
 const OPENCLAW_REPOSITORY = "openclaw/openclaw";
@@ -16,7 +17,7 @@ export function prepareOpenClawCodexSourceForReview(options: {
   reviewTreeRoot?: string;
   env?: NodeJS.ProcessEnv;
   spawn?: Spawn;
-}): void {
+}): string | undefined {
   if (options.targetRepo.toLowerCase() !== OPENCLAW_REPOSITORY) return;
   const env = options.env ?? process.env;
   const script = env.CLAWSWEEPER_OPENCLAW_CODEX_SETUP_SCRIPT;
@@ -45,6 +46,8 @@ export function prepareOpenClawCodexSourceForReview(options: {
       `Could not prepare the PR-pinned Codex source: ${detail}`,
     );
   }
+  // Only successful host-owned setup may authorize its pinned source sibling.
+  return options.reviewTreeRoot ? join(dirname(resolve(targetDir)), "codex") : undefined;
 }
 
 export function openClawCodexSourcePreparationFailureRetryable(error: unknown): boolean {

@@ -34,6 +34,23 @@ function fakeOpenclaw(root: string): string {
     binary,
     `#!/usr/bin/env node
 const fs = require("node:fs");
+if (process.argv[2] === "sessions") {
+  if (!process.env.OPENCLAW_TEST_SQLITE_EXPORT) process.exit(4);
+  const path = require("node:path");
+  const key = process.argv[process.argv.indexOf("--session-key") + 1];
+  const sessionId = key.slice("agent:main:explicit:".length);
+  const outputDir = path.join(process.env.OPENCLAW_STATE_DIR, ".openclaw", "trajectory-exports", "checkout-receipt");
+  fs.mkdirSync(outputDir, { recursive: true });
+  const entries = JSON.parse(fs.readFileSync(path.join(process.env.OPENCLAW_STATE_DIR, "export-entries.json"), "utf8"));
+  const events = entries.flatMap(({message}) => {
+    if (message.role === "assistant") return message.content.filter(c => c.type === "toolCall").map(c => ({type: "tool.call", data: {toolCallId: c.id, name: c.name, arguments: c.arguments}}));
+    return message.role === "toolResult" ? [{type: "tool.result", data: {message}}] : [];
+  }).map(e => ({traceSchema: "openclaw-trajectory", schemaVersion: 1, sessionId, source: "transcript", ...e}));
+  fs.writeFileSync(path.join(outputDir, "events.jsonl"), events.map(e => JSON.stringify(e)).join("\\n") + "\\n");
+  fs.writeFileSync(path.join(outputDir, "manifest.json"), JSON.stringify({sessionId: process.env.OPENCLAW_TEST_WRONG_EXPORT_ID ? "wrong-session" : sessionId, eventCount: events.length}));
+  console.log(JSON.stringify({sessionId, outputDir}));
+  process.exit(0);
+}
 const record = {
   args: process.argv.slice(2),
   stateDir: process.env.OPENCLAW_STATE_DIR,
@@ -48,6 +65,8 @@ const record = {
     CLAWSWEEPER_APP_PRIVATE_KEY: process.env.CLAWSWEEPER_APP_PRIVATE_KEY ?? null,
     KIMI_API_KEY: process.env.KIMI_API_KEY ?? null,
     OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? null,
+    NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS ?? null,
+    NODE_TLS_REJECT_UNAUTHORIZED: process.env.NODE_TLS_REJECT_UNAUTHORIZED ?? null,
   },
 };
 fs.writeFileSync(process.env.OPENCLAW_TEST_RECORD, JSON.stringify(record));
@@ -78,7 +97,11 @@ if (process.env.OPENCLAW_TEST_READ_PATH) {
   if (process.env.OPENCLAW_TEST_RECEIPT_EXTRA) {
     entries.push(...JSON.parse(process.env.OPENCLAW_TEST_RECEIPT_EXTRA));
   }
+if (process.env.OPENCLAW_TEST_SQLITE_EXPORT) {
+  fs.writeFileSync(require("node:path").join(record.stateDir, "export-entries.json"), JSON.stringify(entries));
+} else {
   fs.writeFileSync(sessionFile, entries.map((entry) => JSON.stringify(entry)).join("\\n") + "\\n");
+}
 }
 process.stderr.write(process.env.OPENCLAW_TEST_STDERR || "");
 process.stdout.write(process.env.OPENCLAW_TEST_STDOUT || JSON.stringify({ payloads: [{ text: "done" }], meta: { stopReason: "stop" } }));
@@ -198,6 +221,7 @@ test("OpenClaw checkout inspection requires structured read evidence", () => {
     const record = JSON.parse(readFileSync(recordPath, "utf8"));
     assert.deepEqual(record.config.tools, {
       allow: ["read"],
+      codeMode: false,
       fs: { workspaceOnly: true },
       exec: { host: "gateway", mode: "deny" },
     });
@@ -340,6 +364,49 @@ test("OpenClaw checkout inspection requires structured read evidence", () => {
       });
       assert.equal(mixedReceipt.status, 1, label);
       assert.match(mixedReceipt.error?.message ?? "", /exact challenged path/);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("OpenClaw canonical export preserves exact read and session binding", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-openclaw-export-test-"));
+  const binary = fakeOpenclaw(root);
+  try {
+    for (const mode of ["valid", "wrong-session", "wrong-path", "failed-read"]) {
+      const recordPath = join(root, mode + ".json");
+      const result = runOpenclawProcess({
+        label: mode,
+        prompt: "read the tracked file",
+        model: "openai/test",
+        cwd: root,
+        env: {
+          ...process.env,
+          CLAWSWEEPER_OPENCLAW_BIN: binary,
+          OPENCLAW_TEST_RECORD: recordPath,
+          OPENCLAW_TEST_SQLITE_EXPORT: "1",
+          OPENCLAW_TEST_WRONG_EXPORT_ID: mode === "wrong-session" ? "1" : "",
+          OPENCLAW_TEST_READ_ERROR: mode === "failed-read" ? "1" : "",
+          OPENCLAW_TEST_READ_PATH: mode === "wrong-path" ? "other.txt" : "tracked.txt",
+          OPENCLAW_TEST_STDOUT: JSON.stringify({
+            payloads: [{ text: "tracked checkout content" }],
+            meta: { stopReason: "stop" },
+          }),
+        },
+        timeoutMs: 10_000,
+        checkoutInspection: {
+          expectedText: "tracked checkout content",
+          expectedPath: "tracked.txt",
+        },
+      });
+      assert.equal(result.status, mode === "valid" ? 0 : 1, mode + ": " + result.error?.message);
+      const record = JSON.parse(readFileSync(recordPath, "utf8"));
+      assert.deepEqual(record.config.tools.allow, ["read"]);
+      assert.equal(record.config.tools.codeMode, false);
+      assert.equal(record.config.tools.exec.mode, "deny");
+      assert.equal(record.config.tools.fs.workspaceOnly, true);
+      assert.equal(existsSync(record.stateDir), false);
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -595,6 +662,8 @@ test("OpenClaw subprocess env strips workflow credentials and keeps provider key
       CLAWSWEEPER_WEBHOOK_SECRET: "workflow-webhook",
       CLAWSWEEPER_APP_PRIVATE_KEY: "workflow-app",
       KIMI_API_KEY: "provider-kimi",
+      NODE_EXTRA_CA_CERTS: join(root, "trusted-ca.pem"),
+      NODE_TLS_REJECT_UNAUTHORIZED: "0",
     };
     const capability = reviewNetworkCapability("clawsweeper-review", {
       ...env,
@@ -617,6 +686,8 @@ test("OpenClaw subprocess env strips workflow credentials and keeps provider key
     assert.equal(record.env.CLAWSWEEPER_WEBHOOK_SECRET, null);
     assert.equal(record.env.CLAWSWEEPER_APP_PRIVATE_KEY, null);
     assert.equal(record.env.KIMI_API_KEY, "provider-kimi");
+    assert.equal(record.env.NODE_EXTRA_CA_CERTS, env.NODE_EXTRA_CA_CERTS);
+    assert.equal(record.env.NODE_TLS_REJECT_UNAUTHORIZED, null);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

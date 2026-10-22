@@ -53,6 +53,7 @@ import { PUBLIC_CODEX_MODEL } from "../dist/codex-env.js";
 import { itemContentDigest } from "../dist/clawsweeper-source-revision.js";
 import {
   createReviewStructuralRecord,
+  reviewStructuralCacheDecision,
   type ReviewStructuralSnapshot,
 } from "../dist/review-structural-cache.js";
 
@@ -199,6 +200,7 @@ const scheduledScenarios = [
   "changed-pr-exact-settlement-failure",
   "changed-pr-exact-source-incompatible",
   "changed-pr-clean",
+  "changed-pr-repository-config",
   "changed-pr-proof-invalid-cursor",
   "changed-pr-proof-maintainer-change",
   "changed-pr-write-access",
@@ -237,6 +239,7 @@ function testScheduledCacheScenario(
     const invalidProofPrior = scenario.startsWith("changed-pr-proof-");
     const proofMaintainerChange = scenario === "changed-pr-proof-maintainer-change";
     const writeAccessAuthor = scenario === "changed-pr-write-access";
+    const repositoryConfigured = scenario === "changed-pr-repository-config";
     const sourceIncompatible = scenario.endsWith("source-incompatible");
     const codexFailure = scenario.endsWith("codex-failure") || sourceIncompatible;
     const exactFailure = scenario.includes("exact");
@@ -611,7 +614,11 @@ process.exitCode = 1;
           Date.now() - (targetDriftExpired ? 25 * 60 * 60_000 : 60_000),
         ).toISOString(),
         lastFullReviewDecision: "keep_open",
-        structuralRecord: (fresh || contentPath) && !cacheRecovery ? null : priorRecord,
+        structuralRecord: repositoryConfigured
+          ? priorRecord
+          : (fresh || contentPath) && !cacheRecovery
+            ? null
+            : priorRecord,
       }),
       fetchReviewStructuralRecord: ({ onPullIdentity }) => {
         structuralFetches += 1;
@@ -726,6 +733,20 @@ process.exitCode = 1;
       reviewCodexForcedLoginMethod: () => "chatgpt",
       reviewMutationRunner: () => null,
       reviewPolicyHash: () => POLICY,
+      repositoryReviewConfig: (directory) => {
+        assert.equal(isPullRequest, true, "issue triage must not load repository review config");
+        assert.equal(directory, target);
+        return repositoryConfigured
+          ? {
+              revision: baseSha,
+              digest: digest("repository-config"),
+              additionalPrompt: "configured instructions",
+              skills: [],
+              files: [],
+              configText: "{}",
+            }
+          : undefined;
+      },
       runReviewCheckoutInspection: (options) => {
         checkoutInspectionCalls += 1;
         inspectedPrompt = options.initialPrompt;
@@ -773,7 +794,10 @@ process.exitCode = 1;
         prompt,
         reasoningEffort,
         serviceTier,
+        repositoryReview,
       }) => {
+        if (repositoryConfigured)
+          assert.equal(repositoryReview.additionalPrompt, "configured instructions");
         assert.equal(
           prompt,
           "Review the current item.",
@@ -873,27 +897,69 @@ process.exitCode = 1;
       },
       verifyRegressionProvenance: (decision) => decision,
       reviewActionForDecision: () => ({ actionTaken: "none" }),
-      markdownFor: ({ item: reviewItem, decision }) =>
-        withReviewRecord(
+      markdownFor: ({
+        item: reviewItem,
+        decision,
+        reviewPolicy,
+        contentDigest,
+        structuralRecord,
+      }) => {
+        assert.equal(reviewPolicy, POLICY);
+        if (repositoryConfigured) {
+          assert.notEqual(contentDigest, digest("content"));
+          assert.equal(
+            structuralRecord,
+            null,
+            "configured reports must discard prior structural anchors",
+          );
+          // Removing/emptying config re-enables the probe, but the configured
+          // verdict cannot pass the actual structural reuse decision.
+          assert.equal(
+            reviewStructuralCacheDecision({
+              review: {
+                reviewStatus: "complete",
+                decision: "keep_open",
+                lastFullReviewDecision: "keep_open",
+                reviewPolicy: POLICY,
+                reviewModel: PUBLIC_CODEX_MODEL,
+                itemSourceRevision: priorRecord.sourceRevision,
+                lastFullReviewAt: new Date().toISOString(),
+              },
+              priorRecord: structuralRecord,
+              currentRecord: priorRecord,
+              reviewPolicy: POLICY,
+              reviewModel: PUBLIC_CODEX_MODEL,
+              explicitDispatch: false,
+              maintainerRequest: false,
+              coordinationEnabled: true,
+            }).reason,
+            "missing_or_invalid_record",
+          );
+        }
+        return withReviewRecord(
           `---\nrepository: ${reviewItem.repo}\nnumber: ${reviewItem.number}\ntype: ${reviewItem.kind}\nreview_status: ${reviewStatusForDecision(decision)}\ndecision: keep_open\n---\nFresh Codex review\n${decision.reviewFindings.map((finding) => finding.title).join("\n")}\n${oversized}`,
           decision,
-        ),
-      selectCandidates: () => ({
-        candidates:
-          closedBeforeSelection || scenario === "empty-batch-selection"
-            ? []
-            : twoItems
-              ? [
-                  { ...item },
-                  {
-                    ...item,
-                    number: ITEM_NUMBER + 1,
-                    url: `https://github.com/${REPO}/pull/${ITEM_NUMBER + 1}`,
-                  },
-                ]
-              : [{ ...item }],
-        scannedPages: 1,
-      }),
+        );
+      },
+      selectCandidates: (options) => {
+        assert.equal(options.reviewPolicy, POLICY);
+        return {
+          candidates:
+            closedBeforeSelection || scenario === "empty-batch-selection"
+              ? []
+              : twoItems
+                ? [
+                    { ...item },
+                    {
+                      ...item,
+                      number: ITEM_NUMBER + 1,
+                      url: `https://github.com/${REPO}/pull/${ITEM_NUMBER + 1}`,
+                    },
+                  ]
+                : [{ ...item }],
+          scannedPages: 1,
+        };
+      },
       suppliedReviewStartLeaseFromArgs,
       targetRepo: () => REPO,
       updateBulkFilerDetectedFrontMatter: (markdown: string) => markdown,

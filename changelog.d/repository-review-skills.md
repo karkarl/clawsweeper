@@ -1,1 +1,1 @@
-- Reviewers discover relevant skills in the target repository at its pinned target-branch revision without copying skills into ClawSweeper or enabling extra model sessions.
+- Allow PR reviews to select pinned native review skills and appended instructions from pinned target-default-branch configuration, without copying target skills into ClawSweeper or enabling additional reviewers.

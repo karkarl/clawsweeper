@@ -41,31 +41,72 @@ guidance.
 policies; being a non-core target does not grant contributors or workers
 permission to edit release-owned files.
 
-## Repository-owned review skills
+## Repository-owned review configuration
 
-Targets keep domain-specific review skills under their own `.agents/skills/`
-directory; do not copy a complete target skill into ClawSweeper. The normal
-reviewer discovers relevant `SKILL.md` files from the exact fetched target
-branch revision shown in its prompt, reads selected skills in full, and resolves
-needed references from that same revision. A PR adding or changing a skill does
-not activate those instructions for its own review. Applicable `AGENTS.md` can
-explain which skills are relevant. No skill registry, installation, queue
-strategy, or target-name special case is needed for read-only guidance.
+Admitted PR reviews may opt in through `.clawsweeper/review.json` on the target
+repository’s default branch. Issue triage is unchanged. The host reads this
+strict configuration once from an authenticated default-branch commit, not the
+PR head, PR base, or webhook/dispatch payload. Missing or empty configuration
+keeps the ordinary prompt, invocation, review cadence and cache identity.
 
-Skill instructions remain subordinate to the host review contract. They cannot
-launch another reviewer, change models, execute bundled helpers, install tools,
-write files, or grant credentials or permissions. When a workflow needs an
-unavailable capability, the reviewer says which part was not run and continues
-its ordinary assessment; it must not claim completed multi-model consensus.
-Missing or irrelevant skills are not defects, and required runtime proof and
-owner decisions remain in force.
+```json
+{
+  "version": 1,
+  "skills": ["domain-review"],
+  "additionalPrompt": "Repository-specific review instructions."
+}
+```
 
-This is instruction discovery, **not hosted dual-model execution**. An optional
-paid companion runtime needs a separate host-level design, explicit rollout
-choice, and real model/settings, cancellation, failure and publication proof.
-Normal review cadence, durable records, cache formats and apply authority do
-not change. The existing review policy hash includes the prompt templates, so
-this prompt change uses the normal policy-invalidation path.
+`skills` selects at most eight exact names under `.agents/skills/<name>/SKILL.md`;
+frontmatter names must match. `additionalPrompt` appends at most 5,000 characters
+to the normal review contract. Unknown keys and versions are rejected. Models,
+fanout and reconciliation are not part of this configuration version.
+
+Configuration, selected skills and relative references use the same pinned
+revision. Bundles are limited to 64 regular UTF-8 files and 256 KiB; symlinks,
+submodules, binary files, escaping/missing Markdown references, nested skills
+and native tool-provisioning dependencies are rejected. Their digest participates
+in hydrated content-cache identity, not the global admission policy. Configured
+reviews skip structural-only reuse because that receipt does not bind config
+bytes; unchanged hydrated content can still reuse its verdict. This does not
+request another review. The ordinary scanner also inspects the selected bytes.
+
+Codex already loads skills natively. The adapter materializes only the selected
+pinned bundle in an isolated native working directory and invokes its exact
+native skill paths. The reviewed checkout remains unchanged and is referenced
+for source inspection, not native skill discovery. Skill instructions cannot
+grant writes, helper execution, installation, delegation or additional models.
+Unsupported methodology must be reported, not claimed complete.
+
+OpenClaw uses the existing managed review-tree parent as its isolated native
+workspace, with pinned skills outside the reviewed checkout. The existing host-owned
+Codex-source sibling is permitted only after successful preparation and exact
+symlink-target verification; unrelated siblings remain rejected. Its name
+allowlist selects only the approved skills;
+the read-only checkout probe allows none. Filesystem workspace-only restrictions
+remain enabled. A missing/shared parent (including ordinary offline user
+checkouts) is unsupported for selected OpenClaw skills and fails before inference;
+unconfigured and append-only operation is unchanged. No source copy or move is
+performed. Adding an extra skill directory to the PR checkout alone is not safe.
+The checkout probe uses only the direct read tool, not Code Mode, and still requires
+the exact challenge and paired successful read receipt. It reads legacy transcripts or the current local `sessions export-trajectory`
+output from its own isolated state; unavailable or mismatched receipts fail closed.
+Host-provided Node CA roots are preserved for verified TLS through managed egress.
+Harness selection remains operator-owned: a native runtime that cannot honor the
+read-only probe is unsupported, not automatically replaced.
+
+Offline local-range review instead trusts the operator-selected `--base` ref
+(default `origin/main`), resolved to its exact commit, not the diff’s merge-base
+or the reviewed `HEAD`. Choose a trusted base: this local input is not a PR or
+webhook field and does not assert live GitHub default-branch freshness. No remote
+or `origin/HEAD` is required when a valid local base proves configuration absence.
+A missing/invalid base fails before inference; head deletion cannot disable its
+configuration. Hosted reviews always use the authenticated default branch above.
+
+This active contract is owned by ClawSweeper maintainers; source owners are
+`src/repository-review-config.ts`, `src/clawsweeper-review-runtime.ts` and
+`src/agent-runner.ts`. Update it when configuration, native harness isolation,
+source pinning, scanner, budgets or cache identity change.
 
 All profiles share the hidden-payload security guard in
 `src/repair/security-signals.ts`. It checks the raw item body and discussion

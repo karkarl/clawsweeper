@@ -2,6 +2,7 @@ import type { ActionEvent } from "./action-ledger.js";
 import type { ActionEventReasonCode, ActionEventStatus } from "./action-ledger.js";
 import type { Args } from "./clawsweeper-args.js";
 import type { AgentScanSource } from "./agent-input-scan.js";
+import type { RepositoryReviewConfig } from "./repository-review-config.js";
 import type {
   AcquiredReviewStartLease,
   Action,
@@ -35,6 +36,7 @@ import type { ReviewStructuralPullState } from "./review-structural-cache.js";
 import type { ReviewStructuralRecord } from "./review-structural-cache.js";
 
 export interface CreateReviewCommandWorkflowDependencies {
+  repositoryReviewConfig: (targetDir: string) => RepositoryReviewConfig | undefined;
   reviewEnvironment: (sandboxMode: string, preserveCodexAuth?: boolean) => NodeJS.ProcessEnv;
   actionLedgerFailureDisposition: (error: unknown) => {
     status: ActionEventStatus;
@@ -318,6 +320,7 @@ export interface CreateReviewCommandWorkflowDependencies {
     streamFileBytes?: number;
     quietLogs?: boolean;
     extraCodexConfig?: string[];
+    repositoryReview?: RepositoryReviewConfig;
   }) => Decision;
   selectCandidates: (options: {
     batchSize: number;

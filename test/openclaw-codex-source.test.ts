@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import {
   OPENCLAW_CODEX_SOURCE_INCOMPATIBLE_EXIT_CODE,
@@ -41,7 +41,7 @@ test("Codex source pin validation accepts only one exact version", (t) => {
 
 test("PR review source preparation invokes the workflow-provisioned setup for the current tree", () => {
   const calls: Array<{ command: string; args: readonly string[] }> = [];
-  prepareOpenClawCodexSourceForReview({
+  const preparedSource = prepareOpenClawCodexSourceForReview({
     targetRepo: "openclaw/openclaw",
     reviewDir: "/private-review/review-trees/131584",
     reviewTreeRoot: "/private-review/review-trees",
@@ -71,6 +71,7 @@ test("PR review source preparation invokes the workflow-provisioned setup for th
     },
   });
 
+  assert.equal(preparedSource, resolve("/workspace/codex"));
   assert.deepEqual(calls, [
     {
       command: "bash",

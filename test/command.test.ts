@@ -1329,6 +1329,23 @@ test("local exact review selects PATH Codex instead of the Desktop app binary", 
 
     mkdirSync(binDir);
     writeFakeScanner(binDir);
+    // Keep fixture transport local while modeling the authenticated target origin.
+    const gitPath = join(binDir, "git");
+    writeFileSync(
+      gitPath,
+      `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args.join(" ") === "remote get-url origin") {
+  console.log("https://github.com/openclaw/openclaw.git");
+} else {
+  const result = require("node:child_process").spawnSync("git", args, {
+    stdio: "inherit", env: { ...process.env, PATH: ${JSON.stringify(process.env.PATH)} },
+  });
+  process.exit(result.status ?? 1);
+}
+`,
+    );
+    chmodSync(gitPath, 0o755);
     const ghPath = join(binDir, "gh.js");
     writeFileSync(
       ghPath,
@@ -1372,6 +1389,10 @@ const pull = {
   updated_at: issue.updated_at,
   body: "body"
 };
+if (args[0] === "api" && args[1] === "repos/openclaw/openclaw") {
+  console.log(JSON.stringify({ full_name: "openclaw/openclaw", default_branch: "main" }));
+  process.exit(0);
+}
 if (args[0] === "api" && args[1] === "repos/openclaw/openclaw/issues/96221") {
   console.log(JSON.stringify(issue));
   process.exit(0);
