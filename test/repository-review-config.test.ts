@@ -9,6 +9,8 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  renameSync,
+  readlinkSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -24,6 +26,7 @@ import {
 } from "../dist/repository-review-config.js";
 import { runAgentProcess } from "../dist/agent-runner.js";
 import { createReviewRuntime } from "../dist/clawsweeper-review-runtime.js";
+import { reviewDecisionParser } from "../dist/clawsweeper-decision-parser.js";
 import { reviewContentCacheHit, shouldReviewItem } from "../dist/scheduler-policy.js";
 import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 
@@ -165,7 +168,9 @@ for (const kind of [
   "oversize",
   "symlink",
   "tools",
+  "tools-case",
   "nested",
+  "nested-case",
 ] as const) {
   test(
     "reject unsafe native bundle " + kind,
@@ -182,17 +187,71 @@ for (const kind of [
         f.put(".agents/skills/sample/references/contract.md", "x".repeat(256 * 1024));
       if (kind === "symlink")
         symlinkSync("../../source.txt", join(f.root, ".agents/skills/sample/link"));
-      if (kind === "tools")
-        f.put(".agents/skills/sample/agents/openai.yaml", "dependencies: { tools: [] }");
-      if (kind === "nested")
+      if (kind === "tools" || kind === "tools-case")
         f.put(
-          ".agents/skills/sample/nested/SKILL.md",
+          ".agents/skills/sample/agents/" + (kind === "tools" ? "openai.yaml" : "OpenAI.yaml"),
+          "dependencies: { tools: [] }",
+        );
+      if (kind === "nested" || kind === "nested-case")
+        f.put(
+          ".agents/skills/sample/nested/" + (kind === "nested" ? "SKILL.md" : "Skill.md"),
           "---\nname: rogue\ndescription: rogue\n---\nrogue",
         );
       assert.throws(() => loadRepositoryReviewConfig(f.root, f.commit()));
     },
   );
 }
+
+for (const file of [
+  "agents/openai.yaml::$DATA",
+  "agents/openai.yaml.",
+  "agents/openai.yaml ",
+  "agents./openai.yaml",
+  "NUL.txt",
+  "COM¹.md",
+]) {
+  test(
+    "reject Windows-aliasing native bundle path " + file,
+    { skip: process.platform === "win32" ? "fixture names are not creatable on Windows" : false },
+    (t) => {
+      const f = fixture(t);
+      f.configure();
+      f.skill();
+      f.put(".agents/skills/sample/" + file, "dependencies: { tools: [] }");
+      assert.throws(() => loadRepositoryReviewConfig(f.root, f.commit()), /Unsafe native skill/);
+    },
+  );
+}
+
+test("case-colliding native bundle paths fail before materialization on any host", (t) => {
+  const f = fixture(t);
+  f.configure();
+  f.skill();
+  const base = f.commit();
+  const blob = f.git("rev-parse", base + ":.agents/skills/sample/references/contract.md");
+  // Construct the collision in Git, including on a case-insensitive test filesystem.
+  f.git(
+    "update-index",
+    "--add",
+    "--cacheinfo",
+    "100644," + blob + ",.agents/skills/sample/references/CONTRACT.md",
+  );
+  const revision = f.git(
+    "-c",
+    "user.name=Fixture",
+    "-c",
+    "user.email=fixture@example.invalid",
+    "commit-tree",
+    f.git("write-tree"),
+    "-p",
+    base,
+    "-m",
+    "test: synthetic case collision",
+    "-m",
+    "Co-authored-by: RomneyDa <6581799+RomneyDa@users.noreply.github.com>",
+  );
+  assert.throws(() => loadRepositoryReviewConfig(f.root, revision), /Case-colliding/);
+});
 
 test("Codex receives native bundle separately, scanners receive selected bytes, and cleanup runs on failure", (t) => {
   const f = fixture(t);
@@ -293,6 +352,101 @@ test("compiled local review rejects invalid trusted base despite head deletion a
   assert.equal(f.git("status", "--porcelain"), "");
 });
 
+test("OpenClaw rejects parent residue and admits the next configured review", (t) => {
+  const f = fixture(t);
+  f.configure();
+  f.skill();
+  const head = f.commit();
+  const config = loadRepositoryReviewConfig(f.root, head)!;
+  const owned = mkdtempSync(join(tmpdir(), "clawsweeper-native-residue-"));
+  t.after(() => rmSync(owned, { recursive: true, force: true }));
+  const source = join(owned, "42");
+  f.git("worktree", "add", "--detach", source, head);
+  const bin = useFakeScanner(t),
+    binary = join(bin, "openclaw-residue");
+  const valid = closeDecision({
+    decision: "keep_open",
+    closeReason: "none",
+    likelyOwners: [
+      {
+        person: "Fixture",
+        role: "source author",
+        reason: "Synthetic fixture commit",
+        commits: [head],
+        files: ["source.txt"],
+        confidence: "high",
+      },
+    ],
+  });
+  writeFileSync(
+    binary,
+    [
+      "#!" + process.execPath,
+      'const fs=require("node:fs"),p=require("node:path"),args=process.argv.slice(2);',
+      'const prompt=fs.readFileSync(args[args.indexOf("--message-file")+1],"utf8");let text;',
+      'if(prompt.startsWith("Use the read tool")){',
+      " const file=JSON.parse(prompt.match(/^Path: (.+)$/m)[1]),line=Number(prompt.match(/Return exactly line (\\d+)/)[1]);",
+      ' text=fs.readFileSync(p.resolve(process.cwd(),file),"utf8").split(/\\r?\\n/)[line-1].trim();',
+      ' const id=args[args.indexOf("--session-id")+1],dir=p.join(process.env.OPENCLAW_STATE_DIR,"agents","main","sessions");fs.mkdirSync(dir,{recursive:true});',
+      ' const entries=[{message:{role:"assistant",content:[{type:"toolCall",id:"read",name:"read",arguments:{path:file}}]}},{message:{role:"toolResult",toolCallId:"read",toolName:"read",isError:false}}];',
+      ' fs.writeFileSync(p.join(dir,id+".jsonl"),entries.map(x=>JSON.stringify(x)).join("\\n"));',
+      "}else{",
+      ' if(process.env.OPENCLAW_TEST_WRITE_PARENT==="1"){fs.writeFileSync("residue.txt","unwanted");fs.mkdirSync("residue-dir");fs.writeFileSync("residue-dir/nested.txt","unwanted");}',
+      " text=" + JSON.stringify(JSON.stringify(valid)) + ";",
+      "}",
+      'console.log(JSON.stringify({payloads:[{text}],meta:{stopReason:"stop"}}));',
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  const env = {
+    ...process.env,
+    CLAWSWEEPER_RUNNER: "openclaw",
+    CLAWSWEEPER_OPENCLAW_MODEL: "openai/test",
+    CLAWSWEEPER_OPENCLAW_BIN: binary,
+    OPENCLAW_TEST_WRITE_PARENT: "1",
+  };
+  const runtime = createReviewRuntime({
+    ensureDir: (path: string) => mkdirSync(path, { recursive: true }),
+    run: (command: string, args: string[], options: { cwd?: string } = {}) =>
+      execFileSync(command, args, { ...options, encoding: "utf8" }),
+    untrustedCodexEnv: () => env,
+    decisionSchemaPath: resolve("schema/clawsweeper-decision.schema.json"),
+    parseDecision: reviewDecisionParser.parseDecision,
+    defaultRootCauseCluster: reviewDecisionParser.defaultRootCauseCluster,
+  } as Parameters<typeof createReviewRuntime>[0]);
+  const options = {
+    item: item({ repo: "steipete/fixture", number: 42, kind: "pull_request" }),
+    context: { pullRequest: { base: { sha: head }, head: { sha: head } } },
+    git: { mainSha: head, latestRelease: null, releaseStateComplete: true },
+    repositoryReview: config,
+    openclawDir: source,
+    reviewTreeRoot: owned,
+    prompt: "BASE",
+    workDir: join(bin, "output"),
+    reviewEnv: env,
+    timeoutMs: 10000,
+    resultFileBytes: 128 * 1024,
+    model: "test",
+    sandboxMode: "read-only",
+    reasoningEffort: "medium",
+    serviceTier: "",
+  } as Parameters<typeof runtime.runCodexForTest>[0];
+  assert.throws(
+    () => runtime.runCodexForTest(options),
+    (error) => {
+      assert.match((error as Error).message, /changed its owned workspace/);
+      assert.equal(runtime.codexReviewFailureRetryable(error), false);
+      return true;
+    },
+  );
+  assert.equal(existsSync(join(owned, "residue.txt")), false);
+  assert.equal(existsSync(join(owned, "residue-dir")), false);
+  assert.equal(existsSync(join(owned, ".agents")), false);
+  assert.equal(f.git("-C", source, "status", "--porcelain"), "");
+  env.OPENCLAW_TEST_WRITE_PARENT = "0";
+  assert.equal(runtime.runCodexForTest(options).localCheckoutAccess, "verified");
+});
+
 test("OpenClaw owned parent isolates native skills, preserves source and cleans failed preflight", (t) => {
   const f = fixture(t);
   f.configure();
@@ -381,6 +535,19 @@ test("OpenClaw owned parent isolates native skills, preserves source and cleans 
     execFileSync("git", ["status", "--porcelain"], { cwd: source, encoding: "utf8" }),
     "",
   );
+  for (const movedKind of ["source", "workspace"]) {
+    const guarded = materializeNativeReviewSkills(config, source, owned);
+    const original = movedKind === "source" ? source : owned;
+    const moved = original + "-moved";
+    renameSync(original, moved);
+    assert.equal(guarded.cleanup(), true);
+    assert.equal(
+      existsSync(movedKind === "source" ? join(moved, "source.txt") : join(moved, "42/source.txt")),
+      true,
+    );
+    renameSync(moved, original);
+    assert.equal(guarded.cleanup(), false);
+  }
   const cachedProbe = runtime.runReviewCheckoutInspection({
     itemNumber: 42,
     openclawDir: source,
@@ -407,6 +574,14 @@ test("OpenClaw owned parent isolates native skills, preserves source and cleans 
   withSibling.cleanup();
   assert.equal(existsSync(join(owned, "codex")), true);
   assert.equal(existsSync(source), true);
+  const replaced = materializeNativeReviewSkills(config, source, owned, pinnedSource);
+  rmSync(join(owned, "codex"));
+  symlinkSync(f.root, join(owned, "codex"), "dir");
+  assert.equal(replaced.cleanup(), true);
+  assert.equal(readlinkSync(join(owned, "codex")), f.root);
+  assert.equal(existsSync(join(owned, ".agents")), true);
+  assert.equal(existsSync(source), true);
+  rmSync(join(owned, ".agents"), { recursive: true });
   rmSync(join(owned, "codex"));
   mkdirSync(join(owned, "codex"));
   assert.throws(

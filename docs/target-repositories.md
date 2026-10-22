@@ -64,9 +64,10 @@ fanout and reconciliation are not part of this configuration version.
 
 Configuration, selected skills and relative references use the same pinned
 revision. Bundles are limited to 64 regular UTF-8 files and 256 KiB; symlinks,
-submodules, binary files, escaping/missing Markdown references, nested skills
-and native tool-provisioning dependencies are rejected. When prompt retention is
-budgeted, the complete repository/native/schema prompt must fit the existing
+submodules, binary files, case-colliding or Windows-aliasing paths, escaping/missing
+Markdown references, nested skills and native tool-provisioning dependencies are
+rejected. When prompt retention is budgeted, the complete repository/native/schema
+prompt must fit the existing
 per-item allocation before retention or full assessment; deterministic prompt
 overruns are not retryable. Missing configuration and
 skill blobs require pinned size metadata and object-store disk admission before
@@ -97,6 +98,10 @@ performed. Adding an extra skill directory to the PR checkout alone is not safe.
 The checkout probe uses only the direct read tool, not Code Mode, and still requires
 the exact challenge and paired successful read receipt. It reads legacy transcripts or the current local `sessions export-trajectory`
 output from its own isolated state; unavailable or mismatched receipts fail closed.
+New siblings written in the owned native workspace are removed during cleanup;
+an otherwise successful review that wrote them is rejected before acceptance.
+Changed original workspace/source/sibling identities instead preserve the workspace
+for recovery and reject acceptance, rather than deleting relocated source.
 Host-provided Node CA roots are preserved for verified TLS through managed egress.
 Harness selection remains operator-owned: a native runtime that cannot honor the
 read-only probe is unsupported, not automatically replaced.

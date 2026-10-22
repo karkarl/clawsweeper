@@ -847,8 +847,10 @@ ${extra}
 
   function runCodex(options: ReviewRunOptions): Decision {
     let native: ReturnType<typeof materializeNativeReviewSkills> | undefined;
+    let wroteOutsideSource = false;
+    let decision: Decision;
     try {
-      return runCodexInWorkspace(options, (preparedCodexSource) => {
+      decision = runCodexInWorkspace(options, (preparedCodexSource) => {
         if (!options.reviewTreeRoot || !options.repositoryReview)
           throw new Error("Native OpenClaw skills require an isolated owned review tree.");
         native = materializeNativeReviewSkills(
@@ -860,8 +862,15 @@ ${extra}
         return native;
       });
     } finally {
-      native?.cleanup();
+      wroteOutsideSource = native?.cleanup() ?? false;
     }
+    if (wroteOutsideSource)
+      throw new CodexReviewError({
+        message: "Native OpenClaw review changed its owned workspace.",
+        status: null,
+        retryable: false,
+      });
+    return decision;
   }
 
   function runCodexInWorkspace(

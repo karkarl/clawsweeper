@@ -369,7 +369,7 @@ function readCheckoutReceipt(params: {
                 type: "toolCall",
                 id: event.data.toolCallId,
                 name: event.data.name,
-                arguments: event.data.arguments,
+                arguments: restoreExportedReadPath(event.data.arguments, params),
               },
             ],
           },
@@ -380,6 +380,27 @@ function readCheckoutReceipt(params: {
   } catch {
     return undefined;
   }
+}
+
+function restoreExportedReadPath(
+  args: unknown,
+  params: { stateDir: string; childEnv: NodeJS.ProcessEnv },
+): unknown {
+  if (!isRecord(args) || typeof args.path !== "string") return args;
+  // The native exporter redacts absolute paths. Restore only its known prefixes
+  // from this exact child environment; legacy JSONL receipts stay untouched.
+  const prefix = /^(~|\$WORKSPACE_DIR|\$OPENCLAW_STATE_DIR)(?=$|[/\\])/.exec(args.path);
+  if (!prefix) return args;
+  const roots = new Set(
+    (prefix[1] === "~" ? [params.childEnv.HOME, params.childEnv.USERPROFILE] : [params.stateDir])
+      .filter((value): value is string => Boolean(value))
+      .map((value) => resolve(value)),
+  );
+  // HOME and USERPROFILE share the same exported label. Never guess when the
+  // redaction loses which of two different roots the successful read used.
+  if (roots.size !== 1) return undefined;
+  const root = [...roots][0]!;
+  return { ...args, path: resolve(root + args.path.slice(prefix[0].length)) };
 }
 
 function hasSuccessfulReadReceipt(options: {
@@ -491,6 +512,7 @@ const OPENCLAW_CHILD_ENV_ALLOWLIST = [
   // Base OS/tooling surface the CLI needs to run.
   "PATH",
   "HOME",
+  "USERPROFILE",
   "USER",
   "SHELL",
   "LANG",

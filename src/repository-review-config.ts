@@ -3,6 +3,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readlinkSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -172,9 +173,14 @@ export function loadRepositoryReviewConfig(
     bundles.flatMap(({ bundle }) => bundle),
     MAX_BYTES - size,
   );
+  const nativePaths = new Set<string>();
   for (const { directory, bundle } of bundles) {
     const prefix = ".agents/skills/" + directory + "/";
     for (const file of bundle) {
+      const nativePath = file.path.toLowerCase();
+      if (nativePaths.has(nativePath))
+        throw new Error("Case-colliding native skill bundle paths are unsupported.");
+      nativePaths.add(nativePath);
       if (
         !file.path.startsWith(prefix) ||
         file.path
@@ -185,18 +191,20 @@ export function loadRepositoryReviewConfig(
               part === "." ||
               part === ".." ||
               part.includes("\\") ||
+              /[<>:"|?*]|[. ]$/.test(part) ||
+              /^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(part) ||
               part.split("").some((character) => character.charCodeAt(0) < 32),
           )
       )
         throw new Error("Unsafe native skill bundle path.");
-      if (file.path.endsWith("/SKILL.md") && file.path !== prefix + "SKILL.md")
+      if (nativePath.endsWith("/skill.md") && file.path !== prefix + "SKILL.md")
         throw new Error("Nested native skills are not selected by this configuration.");
       const text = read(["cat-file", "blob", file.oid], MAX_BYTES - size);
       size += Buffer.byteLength(text);
       if (text.includes("\0") || size > MAX_BYTES)
         throw new Error("Native skill bundle exceeds text budget.");
       // Native integration sidecars can provision tools; this lane grants no such authority.
-      if (file.path === prefix + "agents/openai.yaml") {
+      if (nativePath === prefix + "agents/openai.yaml") {
         const sidecar = parse(text) as Record<string, unknown> | null;
         if (sidecar?.dependencies)
           throw new Error("Native skill tool dependencies are unsupported in review.");
@@ -289,8 +297,37 @@ export function materializeNativeReviewSkills(
   const cwd = ownedWorkspace
     ? realpathSync(ownedWorkspace)
     : mkdtempSync(join(tmpdir(), "clawsweeper-native-skills-"));
-  const cleanup = () =>
-    rmSync(ownedWorkspace ? join(cwd, ".agents") : cwd, { recursive: true, force: true });
+  const identity = (path: string) => {
+    const stat = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+    if (!stat) return undefined;
+    return [
+      stat.dev,
+      stat.ino,
+      stat.isDirectory(),
+      stat.isSymbolicLink() ? readlinkSync(path) : "",
+    ].join(":");
+  };
+  const rootIdentity = identity(cwd);
+  const preserved = ownedWorkspace
+    ? new Map(readdirSync(cwd).map((entry) => [entry, identity(join(cwd, entry))]))
+    : undefined;
+  const cleanup = () => {
+    if (!preserved) {
+      rmSync(cwd, { recursive: true, force: true });
+      return false;
+    }
+    // A renamed source or replaced sibling is recovery evidence, not disposable
+    // agent scratch. Preserve everything if an original identity changed.
+    if (
+      identity(cwd) !== rootIdentity ||
+      [...preserved].some(([entry, expected]) => identity(join(cwd, entry)) !== expected)
+    )
+      return true;
+    const added = readdirSync(cwd).filter((entry) => entry !== ".agents" && !preserved.has(entry));
+    rmSync(join(cwd, ".agents"), { recursive: true, force: true });
+    for (const entry of added) rmSync(join(cwd, entry), { recursive: true, force: true });
+    return added.length > 0;
+  };
   try {
     for (const file of config.files) {
       const path = join(cwd, file.path);

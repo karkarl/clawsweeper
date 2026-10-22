@@ -382,7 +382,21 @@ test("OpenClaw canonical export preserves exact read and session binding", () =>
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-openclaw-export-test-"));
   const binary = fakeOpenclaw(root);
   try {
-    for (const mode of ["valid", "wrong-session", "wrong-path", "failed-read"]) {
+    for (const mode of [
+      "valid",
+      "wrong-session",
+      "wrong-path",
+      "failed-read",
+      "home",
+      "profile",
+      "same-home",
+      "ambiguous-home",
+      "wrong-home-path",
+      "missing-home",
+      "near-prefix",
+      "wrong-workspace",
+      "wrong-state",
+    ]) {
       const recordPath = join(root, mode + ".json");
       const result = runOpenclawProcess({
         label: mode,
@@ -396,7 +410,28 @@ test("OpenClaw canonical export preserves exact read and session binding", () =>
           OPENCLAW_TEST_SQLITE_EXPORT: "1",
           OPENCLAW_TEST_WRONG_EXPORT_ID: mode === "wrong-session" ? "1" : "",
           OPENCLAW_TEST_READ_ERROR: mode === "failed-read" ? "1" : "",
-          OPENCLAW_TEST_READ_PATH: mode === "wrong-path" ? "other.txt" : "tracked.txt",
+          HOME: ["profile", "missing-home"].includes(mode) ? undefined : root,
+          USERPROFILE: ["profile", "same-home"].includes(mode)
+            ? root
+            : mode === "ambiguous-home"
+              ? join(root, "other-home")
+              : undefined,
+          OPENCLAW_TEST_READ_PATH:
+            mode === "wrong-path"
+              ? "other.txt"
+              : mode === "wrong-home-path"
+                ? "~/other.txt"
+                : mode === "near-prefix"
+                  ? "~other/tracked.txt"
+                  : mode === "wrong-workspace"
+                    ? "$WORKSPACE_DIR/tracked.txt"
+                    : mode === "wrong-state"
+                      ? "$OPENCLAW_STATE_DIR/tracked.txt"
+                      : ["home", "profile", "same-home", "ambiguous-home", "missing-home"].includes(
+                            mode,
+                          )
+                        ? "~/tracked.txt"
+                        : "tracked.txt",
           OPENCLAW_TEST_STDOUT: JSON.stringify({
             payloads: [{ text: "tracked checkout content" }],
             meta: { stopReason: "stop" },
@@ -408,7 +443,8 @@ test("OpenClaw canonical export preserves exact read and session binding", () =>
           expectedPath: "tracked.txt",
         },
       });
-      assert.equal(result.status, mode === "valid" ? 0 : 1, mode + ": " + result.error?.message);
+      const accepted = ["valid", "home", "profile", "same-home"].includes(mode);
+      assert.equal(result.status, accepted ? 0 : 1, mode + ": " + result.error?.message);
       const record = JSON.parse(readFileSync(recordPath, "utf8"));
       assert.deepEqual(record.config.tools.allow, ["read"]);
       assert.equal(record.config.tools.codeMode, false);
