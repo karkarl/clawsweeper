@@ -10,6 +10,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, posix } from "node:path";
+import {
+  ValidationRecoveryRequiredError,
+  validationRecoveryRequired,
+} from "./validation-recovery.js";
 import MarkdownIt from "markdown-it/browser";
 import { parse } from "yaml";
 import { readReviewGit } from "./pr-review-evidence.js";
@@ -311,7 +315,7 @@ export function materializeNativeReviewSkills(
   const preserved = ownedWorkspace
     ? new Map(readdirSync(cwd).map((entry) => [entry, identity(join(cwd, entry))]))
     : undefined;
-  const cleanup = () => {
+  const cleanup = (cause?: unknown) => {
     if (!preserved) {
       rmSync(cwd, { recursive: true, force: true });
       return false;
@@ -322,7 +326,10 @@ export function materializeNativeReviewSkills(
       identity(cwd) !== rootIdentity ||
       [...preserved].some(([entry, expected]) => identity(join(cwd, entry)) !== expected)
     )
-      return true;
+      throw (
+        validationRecoveryRequired(cause) ??
+        new ValidationRecoveryRequiredError("Native review workspace identity changed", cause)
+      ).retain([cwd]);
     const added = readdirSync(cwd).filter((entry) => entry !== ".agents" && !preserved.has(entry));
     rmSync(join(cwd, ".agents"), { recursive: true, force: true });
     for (const entry of added) rmSync(join(cwd, entry), { recursive: true, force: true });
@@ -351,7 +358,7 @@ export function materializeNativeReviewSkills(
       .join("\n");
     return { cwd, prompt, cleanup };
   } catch (error) {
-    cleanup();
+    cleanup(error);
     throw error;
   }
 }

@@ -198,6 +198,7 @@ const scheduledScenarios = [
   "changed-pr-exact-fetch-failure",
   "changed-pr-exact-native-checkout-failure",
   "changed-pr-exact-settlement-failure",
+  "changed-pr-exact-native-review-recovery",
   "changed-pr-exact-source-incompatible",
   "changed-pr-clean",
   "changed-pr-repository-config",
@@ -251,7 +252,8 @@ function testScheduledCacheScenario(
     const fetchFailure = scenario.endsWith("fetch-failure");
     const blobMetadataFailure = scenario.endsWith("blob-metadata-failure");
     const nativeCheckoutFailure = scenario.endsWith("native-checkout-failure");
-    const settlementFailure = scenario.endsWith("settlement-failure");
+    const nativeReviewRecovery = scenario.endsWith("native-review-recovery");
+    const settlementFailure = scenario.endsWith("settlement-failure") || nativeReviewRecovery;
     const checkoutUnavailable = scenario.endsWith("checkout-unavailable");
     const cacheRecovery = scenario === "structural-pr-checkout-recovery";
     const partialJsonFailure = scenario.startsWith("changed-pr-partial-json-")
@@ -685,7 +687,7 @@ process.exitCode = 1;
       materializePullRequestReviewTree: ({ worktreeDir }) => {
         privateReviewRoots.add(dirname(worktreeDir));
         reviewTreeAttempts += 1;
-        if (settlementFailure) {
+        if (settlementFailure && !nativeReviewRecovery) {
           mkdirSync(worktreeDir);
           throw unsettled;
         }
@@ -819,6 +821,10 @@ process.exitCode = 1;
           assert.equal(reviewItem.authorAssociation, "CONTRIBUTOR");
         }
         generationCalls += 1;
+        if (nativeReviewRecovery) {
+          recovery.retain([reviewTreeRoot!]);
+          throw unsettled;
+        }
         if (isPullRequest) {
           assert.equal(reviewTreeRoot, realpathSync(dirname(openclawDir)));
           assert.notEqual(reviewTreeRoot, join(artifactDir, "review-trees"));
@@ -1181,7 +1187,7 @@ process.exitCode = 1;
         assert.throws(execute, (error) => error === unsettled);
         assert.equal(reviewTreeAttempts, 1);
         assert.equal(reviewTreeCleanupCalls, 0);
-        assert.equal(generationCalls, 0);
+        assert.equal(generationCalls, nativeReviewRecovery ? 1 : 0);
         assert.equal(checkoutInspectionCalls, 0);
         assert.equal(existsSync(providerCalls), false);
         assert.equal(existsSync(join(artifactDir, `${ITEM_NUMBER}.md`)), false);
@@ -1453,7 +1459,7 @@ process.exitCode = 1;
           assert.equal(
             existsSync(privateRoot),
             settlementFailure,
-            "only uncertain acquisition retains its private sibling root",
+            "uncertain acquisition or native review retains its private sibling root",
           );
         }
         assert.equal(existsSync(join(target, "value.ts")), true, "sibling target remains intact");

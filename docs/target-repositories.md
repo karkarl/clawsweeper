@@ -86,9 +86,20 @@ Unsupported methodology must be reported, not claimed complete. Selected Codex
 skills preserve the normal same-thread structured-decision repair lifecycle.
 
 OpenClaw uses the existing managed review-tree parent as its isolated native
-workspace, with pinned skills outside the reviewed checkout. The existing host-owned
-Codex-source sibling is permitted only after successful preparation and exact
-symlink-target verification; unrelated siblings remain rejected. Its name
+workspace, with pinned skills outside the reviewed checkout. This does not enable
+optional Codex-source provisioning in jobs where the existing setup is absent.
+When present, the host-owned Codex-source sibling is permitted only after
+successful preparation and exact
+symlink-target verification. Its referent uses the existing read-only mode guard;
+original modes are restored only on the same filesystem identities. Before
+acceptance, a bounded streaming fingerprint checks the entire owned clone, including
+Git metadata, modification/change timestamps and ignored/untracked files. On every
+assessment exit, drift or an unverifiable snapshot requires recovery and preserves
+the reference and review workspace, including the original failure cause. Git
+optional index writes are disabled for selected native reviews;
+worktree-style Git pointers and escaping reference links are unsupported. This is
+post-execution verification, not a new OS sandbox. Unrelated siblings remain
+rejected. Its name
 allowlist selects only the approved skills;
 the read-only checkout probe allows none. Filesystem workspace-only restrictions
 remain enabled. A missing/shared parent (including ordinary offline user

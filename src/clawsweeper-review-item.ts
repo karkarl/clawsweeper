@@ -1,3 +1,4 @@
+import { validationRecoveryRequired } from "./validation-recovery.js";
 import { join } from "node:path";
 import type { RepositoryReviewConfig } from "./repository-review-config.js";
 import { applyHiddenPayloadSecurityReview } from "./repair/security-signals.js";
@@ -200,7 +201,7 @@ export function runPreparedReviewItem(
         }),
     );
   } catch (error) {
-    if (error instanceof AgentInputScanError) throw error;
+    if (error instanceof AgentInputScanError || validationRecoveryRequired(error)) throw error;
     codexFailureRetryable = codexReviewFailureRetryable(error);
     const failure = codexReviewFailure(error);
     decision = failure.decision;

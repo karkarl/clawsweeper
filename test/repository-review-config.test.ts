@@ -1,3 +1,7 @@
+import {
+  ValidationRecoveryRequiredError,
+  validationRecoveryRequired,
+} from "../dist/validation-recovery.js";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { closeDecision, item } from "./helpers.ts";
@@ -11,6 +15,7 @@ import {
   rmSync,
   renameSync,
   readlinkSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -364,6 +369,29 @@ test("OpenClaw rejects parent residue and admits the next configured review", (t
   f.git("worktree", "add", "--detach", source, head);
   const bin = useFakeScanner(t),
     binary = join(bin, "openclaw-residue");
+  const codexSource = join(bin, "codex"),
+    targetDir = join(bin, "target");
+  mkdirSync(targetDir);
+  execFileSync("git", ["clone", "--quiet", "--no-hardlinks", f.root, codexSource]);
+  symlinkSync(codexSource, join(owned, "codex"), "dir");
+  const codexFile = join(codexSource, "source.txt");
+  const originalMode = statSync(codexFile).mode;
+  const originalRootMode = statSync(codexSource).mode;
+  const setupScript = join(bin, "setup.sh");
+  writeFileSync(setupScript, "#!/bin/sh\nexit 0\n");
+  const setup = {
+    CLAWSWEEPER_OPENCLAW_CODEX_SETUP_SCRIPT: setupScript,
+    CLAWSWEEPER_OPENCLAW_CODEX_TARGET_DIR: targetDir,
+    CLAWSWEEPER_OPENCLAW_CODEX_CACHE_DIR: join(bin, "cache"),
+  };
+  for (const [key, value] of Object.entries(setup)) {
+    const old = process.env[key];
+    process.env[key] = value;
+    t.after(() => {
+      if (old === undefined) delete process.env[key];
+      else process.env[key] = old;
+    });
+  }
   const valid = closeDecision({
     decision: "keep_open",
     closeReason: "none",
@@ -384,6 +412,8 @@ test("OpenClaw rejects parent residue and admits the next configured review", (t
       "#!" + process.execPath,
       'const fs=require("node:fs"),p=require("node:path"),args=process.argv.slice(2);',
       'const prompt=fs.readFileSync(args[args.indexOf("--message-file")+1],"utf8");let text;',
+      'const reference=p.join(process.cwd(),"codex","source.txt");if(fs.statSync(reference).mode & 0o222)throw Error("reference is writable");',
+      'if(process.getuid?.()!==0){let refused=false;try{fs.writeFileSync(reference,"tampered");}catch(e){if(!["EACCES","EPERM"].includes(e.code))throw e;refused=true;}if(!refused)throw Error("reference write unexpectedly succeeded");}',
       'if(prompt.startsWith("Use the read tool")){',
       " const file=JSON.parse(prompt.match(/^Path: (.+)$/m)[1]),line=Number(prompt.match(/Return exactly line (\\d+)/)[1]);",
       ' text=fs.readFileSync(p.resolve(process.cwd(),file),"utf8").split(/\\r?\\n/)[line-1].trim();',
@@ -391,7 +421,13 @@ test("OpenClaw rejects parent residue and admits the next configured review", (t
       ' const entries=[{message:{role:"assistant",content:[{type:"toolCall",id:"read",name:"read",arguments:{path:file}}]}},{message:{role:"toolResult",toolCallId:"read",toolName:"read",isError:false}}];',
       ' fs.writeFileSync(p.join(dir,id+".jsonl"),entries.map(x=>JSON.stringify(x)).join("\\n"));',
       "}else{",
+      ' if(process.env.GIT_OPTIONAL_LOCKS!=="0")throw Error("optional Git writes not disabled");require("child_process").execFileSync("git",["-C",p.dirname(reference),"status","--porcelain"]);',
+      ' if(process.env.OPENCLAW_TEST_REFERENCE_CHANGE==="file"){fs.chmodSync(reference,0o644);fs.writeFileSync(reference,"tampered");}',
+      ' if(process.env.OPENCLAW_TEST_REFERENCE_CHANGE==="directory")fs.chmodSync(p.dirname(reference),0);',
+      ' if(process.env.OPENCLAW_TEST_REFERENCE_CHANGE==="metadata")fs.appendFileSync(p.join(p.dirname(reference),".git/config"),String.fromCharCode(10)+"[proof]"+String.fromCharCode(10)+" changed = true"+String.fromCharCode(10));',
       ' if(process.env.OPENCLAW_TEST_WRITE_PARENT==="1"){fs.writeFileSync("residue.txt","unwanted");fs.mkdirSync("residue-dir");fs.writeFileSync("residue-dir/nested.txt","unwanted");}',
+      ' if(process.env.OPENCLAW_TEST_FAIL_AFTER_MUTATION==="1")process.exit(1);',
+      ' if(process.env.OPENCLAW_TEST_MOVE_PARENT_SOURCE==="1")fs.renameSync("42","42-moved");',
       " text=" + JSON.stringify(JSON.stringify(valid)) + ";",
       "}",
       'console.log(JSON.stringify({payloads:[{text}],meta:{stopReason:"stop"}}));',
@@ -404,6 +440,7 @@ test("OpenClaw rejects parent residue and admits the next configured review", (t
     CLAWSWEEPER_OPENCLAW_MODEL: "openai/test",
     CLAWSWEEPER_OPENCLAW_BIN: binary,
     OPENCLAW_TEST_WRITE_PARENT: "1",
+    OPENCLAW_TEST_REFERENCE_CHANGE: "",
   };
   const runtime = createReviewRuntime({
     ensureDir: (path: string) => mkdirSync(path, { recursive: true }),
@@ -415,7 +452,7 @@ test("OpenClaw rejects parent residue and admits the next configured review", (t
     defaultRootCauseCluster: reviewDecisionParser.defaultRootCauseCluster,
   } as Parameters<typeof createReviewRuntime>[0]);
   const options = {
-    item: item({ repo: "steipete/fixture", number: 42, kind: "pull_request" }),
+    item: item({ repo: "openclaw/openclaw", number: 42, kind: "pull_request" }),
     context: { pullRequest: { base: { sha: head }, head: { sha: head } } },
     git: { mainSha: head, latestRelease: null, releaseStateComplete: true },
     repositoryReview: config,
@@ -444,7 +481,117 @@ test("OpenClaw rejects parent residue and admits the next configured review", (t
   assert.equal(existsSync(join(owned, ".agents")), false);
   assert.equal(f.git("-C", source, "status", "--porcelain"), "");
   env.OPENCLAW_TEST_WRITE_PARENT = "0";
+  assert.equal(statSync(codexFile).mode, originalMode);
   assert.equal(runtime.runCodexForTest(options).localCheckoutAccess, "verified");
+  assert.equal(statSync(codexFile).mode, originalMode);
+  assert.equal(readFileSync(codexFile, "utf8"), "ordinary reviewed source");
+  assert.equal(f.git("-C", codexSource, "status", "--porcelain"), "");
+  const gitConfigPath = join(codexSource, ".git/config");
+  const gitConfig = readFileSync(gitConfigPath);
+  for (const change of ["file", "metadata", "directory"]) {
+    env.OPENCLAW_TEST_REFERENCE_CHANGE = change;
+    assert.throws(
+      () => runtime.runCodexForTest(options),
+      (error) => {
+        assert.match((error as Error).message, /reference source changed|EACCES|EPERM/);
+        assert.equal(runtime.codexReviewFailureRetryable(error), false);
+        return true;
+      },
+    );
+    assert.equal(statSync(codexFile).mode, originalMode);
+    assert.equal(statSync(codexSource).mode, originalRootMode);
+    writeFileSync(gitConfigPath, gitConfig);
+    f.git("-C", codexSource, "restore", "source.txt");
+  }
+  env.OPENCLAW_TEST_REFERENCE_CHANGE = "metadata";
+  env.OPENCLAW_TEST_FAIL_AFTER_MUTATION = "1";
+  assert.throws(
+    () => runtime.runCodexForTest(options),
+    (error) => {
+      const recovery = validationRecoveryRequired(error);
+      assert.ok(recovery);
+      assert.ok(recovery.recoveryPaths.has(codexSource));
+      assert.ok(recovery.cause instanceof Error);
+      assert.match(recovery.cause.message, /exit|failed/i);
+      assert.equal(runtime.codexReviewFailureRetryable(error), false);
+      return true;
+    },
+  );
+  assert.ok(readFileSync(gitConfigPath, "utf8").includes("[proof]"));
+  writeFileSync(gitConfigPath, gitConfig);
+  delete env.OPENCLAW_TEST_FAIL_AFTER_MUTATION;
+  delete env.OPENCLAW_TEST_REFERENCE_CHANGE;
+  const originalChmod = fs.chmodSync;
+  const restoreCause = new Error("fixture restore denied");
+  try {
+    fs.chmodSync = ((file, mode) => {
+      if (String(file) === codexFile && mode === originalMode) throw restoreCause;
+      return originalChmod(file, mode);
+    }) as typeof fs.chmodSync;
+    syncBuiltinESMExports();
+    assert.throws(
+      () => runtime.runCodexForTest(options),
+      (error) => {
+        const recovery = validationRecoveryRequired(error);
+        assert.ok(recovery);
+        assert.ok(recovery.recoveryPaths.has(codexSource));
+        assert.ok(recovery.recoveryPaths.has(owned));
+        assert.match(recovery.message, /modes could not be restored/);
+        return true;
+      },
+    );
+  } finally {
+    fs.chmodSync = originalChmod;
+    syncBuiltinESMExports();
+    originalChmod(codexFile, originalMode);
+  }
+  const relocated = join(owned, "42-moved");
+  Object.assign(env, { OPENCLAW_TEST_MOVE_PARENT_SOURCE: "1" });
+  try {
+    assert.throws(
+      () => runtime.runCodexForTest(options),
+      (error) => {
+        const recovery = validationRecoveryRequired(error);
+        assert.ok(recovery);
+        assert.ok(recovery.recoveryPaths.has(owned));
+        assert.ok(recovery.cause instanceof Error);
+        assert.equal(runtime.codexReviewFailureRetryable(error), false);
+        return true;
+      },
+    );
+    assert.equal(existsSync(join(relocated, "source.txt")), true);
+  } finally {
+    if (existsSync(relocated)) renameSync(relocated, source);
+    rmSync(join(owned, ".agents"), { recursive: true, force: true });
+  }
+  const originalWrite = fs.writeFileSync;
+  const preparationCause = new Error("fixture materialization failed after source relocation");
+  try {
+    fs.writeFileSync = ((...args: Parameters<typeof fs.writeFileSync>) => {
+      if (String(args[0]).startsWith(join(owned, ".agents"))) {
+        renameSync(source, relocated);
+        throw preparationCause;
+      }
+      return originalWrite(...args);
+    }) as typeof fs.writeFileSync;
+    syncBuiltinESMExports();
+    assert.throws(
+      () => runtime.runCodexForTest(options),
+      (error) => {
+        const recovery = validationRecoveryRequired(error);
+        assert.ok(recovery);
+        assert.equal(recovery.cause, preparationCause);
+        assert.ok(recovery.recoveryPaths.has(owned));
+        assert.equal(existsSync(join(relocated, "source.txt")), true);
+        return true;
+      },
+    );
+  } finally {
+    fs.writeFileSync = originalWrite;
+    syncBuiltinESMExports();
+    if (existsSync(relocated)) renameSync(relocated, source);
+    rmSync(join(owned, ".agents"), { recursive: true, force: true });
+  }
 });
 
 test("OpenClaw owned parent isolates native skills, preserves source and cleans failed preflight", (t) => {
@@ -540,7 +687,22 @@ test("OpenClaw owned parent isolates native skills, preserves source and cleans 
     const original = movedKind === "source" ? source : owned;
     const moved = original + "-moved";
     renameSync(original, moved);
-    assert.equal(guarded.cleanup(), true);
+    const inherited = new ValidationRecoveryRequiredError(
+      "reference drift",
+      new Error("original"),
+      [join(f.root, "retained-reference")],
+    );
+    assert.throws(
+      () => guarded.cleanup(inherited),
+      (error) => {
+        const recovery = validationRecoveryRequired(error);
+        assert.ok(recovery);
+        assert.ok(recovery.recoveryPaths.has(owned));
+        assert.equal(recovery, inherited);
+        assert.ok(recovery.recoveryPaths.has(join(f.root, "retained-reference")));
+        return true;
+      },
+    );
     assert.equal(
       existsSync(movedKind === "source" ? join(moved, "source.txt") : join(moved, "42/source.txt")),
       true,
@@ -577,7 +739,13 @@ test("OpenClaw owned parent isolates native skills, preserves source and cleans 
   const replaced = materializeNativeReviewSkills(config, source, owned, pinnedSource);
   rmSync(join(owned, "codex"));
   symlinkSync(f.root, join(owned, "codex"), "dir");
-  assert.equal(replaced.cleanup(), true);
+  assert.throws(
+    () => replaced.cleanup(),
+    (error) => {
+      assert.ok(validationRecoveryRequired(error));
+      return true;
+    },
+  );
   assert.equal(readlinkSync(join(owned, "codex")), f.root);
   assert.equal(existsSync(join(owned, ".agents")), true);
   assert.equal(existsSync(source), true);
