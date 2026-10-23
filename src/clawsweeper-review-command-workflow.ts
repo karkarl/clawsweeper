@@ -59,10 +59,6 @@ import {
 import { reviewContentCacheHit } from "./scheduler-policy.js";
 import type { CreateReviewCommandWorkflowDependencies } from "./clawsweeper-review-command-dependencies.js";
 import { prepareReviewCommand } from "./clawsweeper-review-preparation.js";
-import {
-  repositoryReviewContentDigest,
-  type RepositoryReviewConfig,
-} from "./repository-review-config.js";
 import { reportWithoutHydrationCache } from "./report-hydration-cache.js";
 import { createCommitPullResolver } from "./pr-review-provenance.js";
 
@@ -284,8 +280,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       retainedReviewOutput,
       cleanupReviewOutput,
     } = preparation;
-    let repositoryReviewLoaded = false;
-    let repositoryReview: RepositoryReviewConfig | undefined;
     const {
       results: localOutputResults,
       writeReport: writeOutputReport,
@@ -447,7 +441,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       const reviewTreeCleanupFailures: string[] = [];
       // oxfmt-ignore
       for (const item of candidates) {
-        let itemRepositoryReview: RepositoryReviewConfig | undefined;
         const itemReadonlyModeSnapshots: ReturnType<typeof makeTreeReadOnly> = [];
         let reviewOpenclawDir = openclawDir;
         let pullRequestReviewTreeDir: string | null = null;
@@ -540,9 +533,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               ? asRecord(asRecord(context.pullRequest).base).sha
               : structuralScanIdentity?.headSha === headSha ? structuralScanIdentity.baseSha : "";
             const inspection = runReviewCheckoutInspection({
-              // Cached selected-skill reviews still probe the source checkout,
-              // but must not activate its untrusted native skill catalog.
-              ...(itemRepositoryReview?.skills.length ? { disableSkills: true } : {}),
               // Structural reuse has no model payload. Hydrated reuse scans the
               // current context too, including source comments.
               initialPrompt: serializeReviewContext(
@@ -615,13 +605,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             console.error(`[review] oversized_pull_request #${item.number} total=${admission.decision.additions + admission.decision.deletions} hydration=0 scanner=0 codex=0 report=${reportPath}`);
             continue;
           }
-        }
-        if (item.kind === "pull_request") {
-          if (!repositoryReviewLoaded) {
-            repositoryReview = dependencies.repositoryReviewConfig(openclawDir);
-            repositoryReviewLoaded = true;
-          }
-          itemRepositoryReview = repositoryReview;
         }
         let authorRepositoryPermission: string | null = null;
         const restoredMaintainerAssociation =
@@ -778,15 +761,13 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         let hydratedStructuralAnchor: ReviewStructuralRecord | null = null;
         {
           structuralCacheChecks += 1;
-          // Structural receipts do not bind config bytes: opted-in items must
-          // hydrate before testing their config-aware content cache identity.
           const structuralProbeDecision = reviewStructuralCacheProbeDecision({
             review: cacheEligibleReview,
             reviewPolicy,
             reviewModel: PUBLIC_CODEX_MODEL,
             explicitDispatch,
             maintainerRequest,
-            coordinationEnabled: structuralCacheCoordinationEnabled && !itemRepositoryReview,
+            coordinationEnabled: structuralCacheCoordinationEnabled,
           });
           if (!structuralProbeDecision.hit) {
             structuralCacheReasons.set(
@@ -830,7 +811,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               reviewModel: PUBLIC_CODEX_MODEL,
               explicitDispatch,
               maintainerRequest,
-              coordinationEnabled: structuralCacheCoordinationEnabled && !itemRepositoryReview,
+              coordinationEnabled: structuralCacheCoordinationEnabled,
             };
             let suppliedLeaseClaim: ReturnType<typeof claimSuppliedReviewLease> | null = null;
             let ownedReservationUpdatedAt: string | undefined;
@@ -1317,10 +1298,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             continue;
           }
         }
-        // Config bytes affect cache validity, not global admission policy.
-        const contentDigest = repositoryReviewContentDigest(
-          itemContentDigest(item, context, git), itemRepositoryReview,
-        );
+        const contentDigest = itemContentDigest(item, context, git);
         const currentPreviousReviewDigest = previousClawSweeperReviewDigest(
           context.previousClawSweeperReview,
         );
@@ -1438,7 +1416,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           humanLocalReview, outputSelection, outputBudget, itemOutputBudget, codexWorkDir,
           forcedLoginMethod, itemCodexProfile, existingPriorReview, contextElapsedMs,
           onPrompt: (prompt) => { diagnosticPrompt = prompt; },
-          ...(itemRepositoryReview ? { repositoryReview: itemRepositoryReview } : {}),
         }, dependencies);
         const codexElapsedMs = runtime.codexElapsedMs;
         const codexFailureDisposition = codexFailure

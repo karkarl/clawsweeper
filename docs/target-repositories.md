@@ -41,8 +41,8 @@ guidance.
 policies; being a non-core target does not grant contributors or workers
 permission to edit release-owned files.
 
-PR reviews can use `.clawsweeper/review.json` (`version: 1`, `skills`, `additionalPrompt`) to load selected `.agents/skills` and append instructions.
-Hosted configuration and skill bundles are pinned to the trusted default branch; local review uses `--base`, and missing configuration preserves ordinary behavior.
+Codex and OpenClaw discover repository skills under `.agents/skills` through their native loaders in the review checkout.
+Name the desired skill in the existing `--additional-prompt` review instructions; no separate ClawSweeper skill loader or bundle validation is needed.
 
 All profiles share the hidden-payload security guard in
 `src/repair/security-signals.ts`. It checks the raw item body and discussion

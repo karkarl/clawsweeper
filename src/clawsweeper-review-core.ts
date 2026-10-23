@@ -1,11 +1,6 @@
 import {
-  ValidationRecoveryRequiredError,
-  validationRecoveryRequired,
-} from "./validation-recovery.js";
-import {
   chmodSync,
   existsSync,
-  lstatSync,
   readFileSync,
   readdirSync,
   rmSync,
@@ -18,13 +13,8 @@ import {
   reviewNetworkCapability,
   runAgentCheckoutInspection,
   runAgentProcess,
-  ReviewPromptBudgetError,
 } from "./agent-runner.js";
 import { AgentInputScanError, type AgentScanSource } from "./agent-input-scan.js";
-import {
-  materializeNativeReviewSkills,
-  type RepositoryReviewConfig,
-} from "./repository-review-config.js";
 import {
   omitReviewedFixtureReferences,
   serializeReviewContext,
@@ -71,7 +61,6 @@ import { emptyMaintainerDecision } from "./decision-packets.js";
 import {
   openClawCodexSourcePreparationFailureRetryable,
   prepareOpenClawCodexSourceForReview,
-  snapshotOpenClawCodexSource,
 } from "./openclaw-codex-source.js";
 import { repositoryProfileFor } from "./repository-profiles.js";
 import { readBoundedReviewResult } from "./review-output-policy.js";
@@ -122,7 +111,7 @@ export interface ReviewRuntimeDependencies {
     ghToken?: string | undefined;
     preserveCodexAuth?: boolean | undefined;
   }) => NodeJS.ProcessEnv;
-  ghJson: <T>(args: string[], options?: { deadlineAt?: number }) => T;
+  ghJson: <T>(args: string[]) => T;
   defaultRootCauseCluster: () => RootCauseClusterAssessment;
   parseDecision: (value: unknown, item?: RootCauseNormalizationItem) => Decision;
   ensureDir: (path: string) => void;
@@ -704,12 +693,7 @@ ${extra}
   }
 
   function codexReviewFailureRetryable(error: unknown): boolean {
-    if (
-      error instanceof AgentInputScanError ||
-      error instanceof ReviewPromptBudgetError ||
-      validationRecoveryRequired(error)
-    )
-      return false;
+    if (error instanceof AgentInputScanError) return false;
     if (!openClawCodexSourcePreparationFailureRetryable(error)) return false;
     return error instanceof CodexReviewError ? error.retryable : true;
   }
@@ -731,31 +715,17 @@ ${extra}
     });
   }
 
-  const modeIdentities = new WeakMap<FileModeSnapshot, string>();
-
-  function makeTreeReadOnly(
-    path: string,
-    snapshots: FileModeSnapshot[] = [],
-    identities?: Map<string, string>,
-  ): FileModeSnapshot[] {
-    const remember = (file: string, mode: number) => {
-      const stat = lstatSync(file, { bigint: true });
-      const identity = String(stat.dev) + ":" + String(stat.ino);
-      const snapshot = { path: file, mode };
-      identities?.set(file, identity);
-      modeIdentities.set(snapshot, identity);
-      snapshots.push(snapshot);
-    };
+  function makeTreeReadOnly(path: string, snapshots: FileModeSnapshot[] = []): FileModeSnapshot[] {
     const stat = statSync(path);
-    remember(path, stat.mode);
+    snapshots.push({ path, mode: stat.mode });
     for (const entry of readdirSync(path, { withFileTypes: true })) {
       const child = join(path, entry.name);
       if (entry.isSymbolicLink()) continue;
       if (entry.name === ".git" && entry.isDirectory()) continue;
-      if (entry.isDirectory()) makeTreeReadOnly(child, snapshots, identities);
+      if (entry.isDirectory()) makeTreeReadOnly(child, snapshots);
       else {
         const childStat = statSync(child);
-        remember(child, childStat.mode);
+        snapshots.push({ path: child, mode: childStat.mode });
         chmodSync(child, childStat.mode & 0o111 ? 0o555 : 0o444);
       }
     }
@@ -764,15 +734,8 @@ ${extra}
   }
 
   function restoreTreeModes(snapshots: readonly FileModeSnapshot[]): void {
-    for (const snapshot of snapshots) {
+    for (const snapshot of [...snapshots].reverse()) {
       try {
-        const current = lstatSync(snapshot.path, { bigint: true, throwIfNoEntry: false });
-        if (
-          !current ||
-          current.isSymbolicLink() ||
-          modeIdentities.get(snapshot) !== String(current.dev) + ":" + String(current.ino)
-        )
-          continue;
         chmodSync(snapshot.path, snapshot.mode);
       } catch {
         // Best-effort cleanup after review; missing temp files should not hide the review result.
@@ -807,8 +770,6 @@ ${extra}
     timeoutMs: number;
     scanSource: AgentScanSource;
     initialPrompt: string;
-    nativeWorkspace?: string;
-    disableSkills?: boolean;
   }): CodexProcessResult {
     const dirtyBefore = openclawDirtyStatus(options.openclawDir);
     if (dirtyBefore) {
@@ -827,8 +788,6 @@ ${extra}
       scanSource: options.scanSource,
       initialPrompt: options.initialPrompt,
       cwd: options.openclawDir,
-      ...(options.nativeWorkspace ? { nativeWorkspace: options.nativeWorkspace } : {}),
-      ...(options.disableSkills ? { disableSkills: true } : {}),
       env: untrustedCodexEnv({
         ghToken: process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,
         preserveCodexAuth: options.preserveCodexAuth,
@@ -850,8 +809,7 @@ ${extra}
     return env;
   }
 
-  type ReviewRunOptions = {
-    repositoryReview?: RepositoryReviewConfig;
+  function runCodex(options: {
     item: Item;
     context: ItemContext;
     git: GitInfo;
@@ -874,116 +832,12 @@ ${extra}
     streamFileBytes?: number;
     quietLogs?: boolean;
     extraCodexConfig?: string[];
-  };
-
-  function runCodex(options: ReviewRunOptions): Decision {
-    let native: ReturnType<typeof materializeNativeReviewSkills> | undefined;
-    const referenceReadonlyModes: FileModeSnapshot[] = [];
-    const referenceIdentities = new Map<string, string>();
-    const referenceDeadline = Date.now() + options.timeoutMs;
-    let reference: { path: string; digest: string } | undefined;
-    let referencePath: string | undefined;
-    let wroteOutsideSource = false;
-    let referenceRestoreFailed = false;
-    let failure: unknown;
-    let failed = false;
-    let decision!: Decision;
-    try {
-      decision = runCodexInWorkspace(options, (preparedCodexSource) => {
-        if (!options.reviewTreeRoot || !options.repositoryReview)
-          throw new Error("Native OpenClaw skills require an isolated owned review tree.");
-        if (preparedCodexSource) {
-          referencePath = preparedCodexSource;
-          makeTreeReadOnly(preparedCodexSource, referenceReadonlyModes, referenceIdentities);
-          reference = {
-            path: preparedCodexSource,
-            digest: snapshotOpenClawCodexSource(preparedCodexSource, referenceDeadline),
-          };
-        }
-        native = materializeNativeReviewSkills(
-          options.repositoryReview,
-          options.openclawDir,
-          options.reviewTreeRoot,
-          preparedCodexSource,
-        );
-        return native;
-      });
-    } catch (error) {
-      failed = true;
-      failure = error;
-    }
-    if (reference) {
-      try {
-        if (snapshotOpenClawCodexSource(reference.path, referenceDeadline) !== reference.digest)
-          throw new Error("Pinned Codex reference source changed during review.");
-      } catch (error) {
-        failure = new ValidationRecoveryRequiredError(
-          "Pinned Codex reference source changed or could not be verified",
-          failed ? failure : error,
-          [reference.path, ...(options.reviewTreeRoot ? [options.reviewTreeRoot] : [])],
-        );
-        failed = true;
-      }
-    }
-    try {
-      wroteOutsideSource = native?.cleanup(failure) ?? false;
-    } catch (error) {
-      failure = error;
-      failed = true;
-    } finally {
-      // Restore parents first so an agent-chmodded directory cannot hide its
-      // original children; never chmod a replacement inode or symbolic link.
-      for (const snapshot of referenceReadonlyModes) {
-        try {
-          const current = lstatSync(snapshot.path, { bigint: true, throwIfNoEntry: false });
-          if (
-            !current ||
-            current.isSymbolicLink() ||
-            referenceIdentities.get(snapshot.path) !== `${current.dev}:${current.ino}`
-          ) {
-            referenceRestoreFailed = true;
-            continue;
-          }
-          chmodSync(snapshot.path, snapshot.mode);
-        } catch {
-          referenceRestoreFailed = true;
-        }
-      }
-    }
-    if (referenceRestoreFailed) {
-      failure = (
-        validationRecoveryRequired(failure) ??
-        new ValidationRecoveryRequiredError(
-          "Pinned Codex reference modes could not be restored safely",
-          failure,
-        )
-      ).retain([
-        ...(referencePath ? [referencePath] : []),
-        ...(options.reviewTreeRoot ? [options.reviewTreeRoot] : []),
-      ]);
-      failed = true;
-    }
-    if (failed) throw failure;
-    if (wroteOutsideSource)
-      throw new CodexReviewError({
-        message: "Native OpenClaw review changed its owned workspace or reference identities.",
-        status: null,
-        retryable: false,
-      });
-    return decision;
-  }
-
-  function runCodexInWorkspace(
-    options: ReviewRunOptions,
-    prepareNative: (
-      preparedCodexSource?: string,
-    ) => ReturnType<typeof materializeNativeReviewSkills>,
-  ): Decision {
+  }): Decision {
     if (!Number.isSafeInteger(options.resultFileBytes) || options.resultFileBytes <= 0) {
       throw new UserFacingCommandError("Review result output requires a positive byte limit.");
     }
     const startedAt = Date.now();
-    const preparedCodexSource = prepareOpenClawCodexSourceForReview({
+    prepareOpenClawCodexSourceForReview({
       targetRepo: options.item.repo,
       reviewDir: options.openclawDir,
       ...(options.reviewTreeRoot === undefined ? {} : { reviewTreeRoot: options.reviewTreeRoot }),
@@ -1014,7 +868,9 @@ ${extra}
       options.promptFileBytes > 0 &&
       Buffer.byteLength(prompt) > options.promptFileBytes
     ) {
-      throw new ReviewPromptBudgetError(options.promptFileBytes);
+      throw new UserFacingCommandError(
+        `Review prompt exceeded its ${options.promptFileBytes}-byte output budget.`,
+      );
     }
     const pull = asRecord(options.context.pullRequest);
     const scanSource: AgentScanSource =
@@ -1025,23 +881,9 @@ ${extra}
             headSha: nonBlankStringOrUndefined(asRecord(pull.head).sha) ?? "",
           }
         : { kind: "prompt" };
-    let native: ReturnType<typeof materializeNativeReviewSkills> | undefined;
-    if (options.repositoryReview?.skills.length && agentRunner(codexEnv) === "openclaw") {
-      try {
-        native = prepareNative(preparedCodexSource);
-      } catch (error) {
-        if (validationRecoveryRequired(error)) throw error;
-        throw new CodexReviewError({
-          message: error instanceof Error ? error.message : "Native skill workspace unavailable.",
-          status: null,
-          retryable: false,
-        });
-      }
-    }
     const checkoutInspection = runReviewCheckoutInspection({
       scanSource,
       initialPrompt: prompt,
-      ...(native ? { nativeWorkspace: native.cwd } : {}),
       itemNumber: options.item.number,
       openclawDir: options.openclawDir,
       timeoutMs: options.timeoutMs - (Date.now() - startedAt),
@@ -1085,13 +927,8 @@ ${extra}
     }
     const processStartedAt = Date.now();
     const result = runAgentProcess({
-      ...(options.repositoryReview ? { repositoryReview: options.repositoryReview } : {}),
-      ...(native ? { nativeWorkspace: native } : {}),
       scanSource,
       ...(options.promptFileBytes === 0 ? {} : { diagnosticPromptPath: promptPath }),
-      ...(options.promptFileBytes === undefined
-        ? {}
-        : { promptFileBytes: options.promptFileBytes }),
       label: `review-${options.item.number}-attempt-1`,
       prompt,
       model: options.model,

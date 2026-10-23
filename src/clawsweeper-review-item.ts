@@ -1,6 +1,4 @@
-import { validationRecoveryRequired } from "./validation-recovery.js";
 import { join } from "node:path";
-import type { RepositoryReviewConfig } from "./repository-review-config.js";
 import { applyHiddenPayloadSecurityReview } from "./repair/security-signals.js";
 import { writeFileSync } from "node:fs";
 import { UserFacingCommandError } from "./command.js";
@@ -65,7 +63,6 @@ export function runPreparedReviewItem(
     existingPriorReview: { markdown: string } | null;
     contextElapsedMs: number;
     onPrompt?: (prompt: string) => void;
-    repositoryReview?: RepositoryReviewConfig;
   },
   dependencies: PreparedReviewDependencies,
 ) {
@@ -196,12 +193,11 @@ export function runPreparedReviewItem(
           resultFileBytes: itemOutputBudget.resultFileBytes,
           streamFileBytes: itemOutputBudget.streamFileBytes,
           quietLogs: humanLocalReview,
-          ...(options.repositoryReview ? { repositoryReview: options.repositoryReview } : {}),
           ...(localRange ? { extraCodexConfig: [LOCAL_REVIEW_WEB_SEARCH_CONFIG] } : {}),
         }),
     );
   } catch (error) {
-    if (error instanceof AgentInputScanError || validationRecoveryRequired(error)) throw error;
+    if (error instanceof AgentInputScanError) throw error;
     codexFailureRetryable = codexReviewFailureRetryable(error);
     const failure = codexReviewFailure(error);
     decision = failure.decision;

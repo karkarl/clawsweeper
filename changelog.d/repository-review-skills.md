@@ -1,1 +1,1 @@
-- Allow PR reviews to select pinned native review skills and appended instructions from pinned target-default-branch configuration, without copying target skills into ClawSweeper or enabling additional reviewers.
+- Document native repository-skill discovery and the existing additional review instructions.

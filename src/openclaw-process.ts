@@ -1,7 +1,7 @@
 import { isRecord } from "./value-coerce.js";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,11 +34,9 @@ export interface OpenClawProcessOptions {
   stdoutPath?: string;
   stderrPath?: string;
   checkoutInspection?: { expectedText: string; expectedPath: string };
-  skillFilter?: string[];
 }
 
 export function runOpenclawProcess(options: OpenClawProcessOptions): CodexProcessResult {
-  const deadlineAt = Date.now() + options.timeoutMs;
   const stateDir = mkdtempSync(join(tmpdir(), "clawsweeper-openclaw-process-"));
   const configPath = join(stateDir, "openclaw.json");
   const promptPath = join(stateDir, "prompt.md");
@@ -50,7 +48,7 @@ export function runOpenclawProcess(options: OpenClawProcessOptions): CodexProces
     const timeoutSeconds = Math.max(1, Math.ceil(options.timeoutMs / 1_000));
     writeFileSync(
       configPath,
-      `${JSON.stringify(openclawConfig(options.env, timeoutSeconds, Boolean(options.checkoutInspection), options.skillFilter))}\n`,
+      `${JSON.stringify(openclawConfig(options.env, timeoutSeconds, Boolean(options.checkoutInspection)))}\n`,
       {
         encoding: "utf8",
         mode: 0o600,
@@ -86,7 +84,6 @@ export function runOpenclawProcess(options: OpenClawProcessOptions): CodexProces
       OPENCLAW_STATE_DIR: stateDir,
       OPENCLAW_CONFIG_PATH: configPath,
       OPENCLAW_WORKSPACE_DIR: options.cwd,
-      ...(options.skillFilter?.length ? { GIT_OPTIONAL_LOCKS: "0" } : {}),
     };
     if (!childEnv.OPENAI_API_KEY && options.env.CLAWSWEEPER_OPENCLAW_OPENAI_KEY) {
       childEnv.OPENAI_API_KEY = options.env.CLAWSWEEPER_OPENCLAW_OPENAI_KEY;
@@ -123,19 +120,17 @@ export function runOpenclawProcess(options: OpenClawProcessOptions): CodexProces
     }
     const processResult = deserializeResult(JSON.parse(readFileSync(resultPath, "utf8")));
     if (worker.error) return { ...processResult, error: worker.error };
-    const completeStdout = readFileSync(stdoutPath, "utf8");
-    return normalizeOpenclawResult(processResult, completeStdout, options.checkoutInspection, {
-      cwd: options.cwd,
-      // OpenClaw persists an explicit local session under this agent-owned
-      // path; inspect it before the isolated state directory is removed.
-      entries:
-        options.checkoutInspection &&
-        processResult.status === 0 &&
-        parseOpenclawJsonEnvelope(completeStdout).text.trim() ===
-          options.checkoutInspection.expectedText
-          ? readCheckoutReceipt({ stateDir, sessionId, options, childEnv, deadlineAt })
-          : undefined,
-    });
+    return normalizeOpenclawResult(
+      processResult,
+      readFileSync(stdoutPath, "utf8"),
+      options.checkoutInspection,
+      {
+        cwd: options.cwd,
+        // OpenClaw persists an explicit local session under this agent-owned
+        // path; inspect it before the isolated state directory is removed.
+        transcriptPath: join(stateDir, "agents", "main", "sessions", `${sessionId}.jsonl`),
+      },
+    );
   } catch (error) {
     return failedResult(error instanceof Error ? error : new Error(String(error)));
   } finally {
@@ -179,13 +174,11 @@ function openclawConfig(
   env: NodeJS.ProcessEnv,
   timeoutSeconds: number,
   checkoutInspection: boolean,
-  skillFilter?: string[],
 ): Record<string, unknown> {
   const config: Record<string, unknown> = {
     agents: {
       defaults: {
         skipBootstrap: true,
-        ...(skillFilter === undefined ? {} : { skills: skillFilter }),
         sandbox: { mode: "off" },
         timeoutSeconds,
       },
@@ -193,8 +186,6 @@ function openclawConfig(
     tools: checkoutInspection
       ? {
           allow: ["read"],
-          // The receipt binds the direct read call, not an opaque Code Mode program.
-          codeMode: false,
           fs: { workspaceOnly: true },
           exec: { host: "gateway", mode: "deny" },
         }
@@ -237,7 +228,7 @@ function normalizeOpenclawResult(
   processResult: CodexProcessResult,
   completeStdout: string,
   checkoutInspection?: { expectedText: string; expectedPath: string },
-  receipt?: { cwd: string; entries?: unknown[] | undefined },
+  receipt?: { cwd: string; transcriptPath: string },
 ): CodexProcessResult {
   if (processResult.error || processResult.status !== 0) return processResult;
   const parsed = parseOpenclawJsonEnvelope(completeStdout, processResult.stderr);
@@ -271,148 +262,27 @@ function normalizeOpenclawResult(
   return { ...processResult, status: 1, error: parsed.failure, stdout: parsed.text };
 }
 
-function readCheckoutReceipt(params: {
-  stateDir: string;
-  sessionId: string;
-  options: OpenClawProcessOptions;
-  childEnv: NodeJS.ProcessEnv;
-  deadlineAt: number;
-}): unknown[] | undefined {
-  try {
-    const legacy = join(params.stateDir, "agents", "main", "sessions", params.sessionId + ".jsonl");
-    if (existsSync(legacy)) {
-      if (statSync(legacy).size > 1024 * 1024) return undefined;
-      return readFileSync(legacy, "utf8")
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => JSON.parse(line));
-    }
-    // Current OpenClaw owns transcripts in SQLite. Use its local, read-only
-    // exporter, not a private database schema or another session's state.
-    const remaining = params.deadlineAt - Date.now();
-    if (remaining <= 0) return undefined;
-    const timeoutMs = Math.min(10_000, remaining);
-    const workerOptionsPath = join(params.stateDir, "receipt-worker.json");
-    const resultPath = join(params.stateDir, "receipt-result.json");
-    const stdoutPath = join(params.stateDir, "receipt-stdout.json");
-    writeFileSync(
-      workerOptionsPath,
-      JSON.stringify({
-        command: params.options.env.CLAWSWEEPER_OPENCLAW_BIN?.trim() || "openclaw",
-        args: [
-          "sessions",
-          "export-trajectory",
-          "--agent",
-          "main",
-          "--session-key",
-          "agent:main:explicit:" + params.sessionId,
-          "--workspace",
-          params.stateDir,
-          "--output",
-          "checkout-receipt",
-          "--json",
-        ],
-        timeoutMs,
-        resultPath,
-        stdoutPath,
-        stderrPath: join(params.stateDir, "receipt-stderr.log"),
-        tailBytes: 256 * 1024,
-        maxOutputFileBytes: 256 * 1024,
-      }),
-      { mode: 0o600 },
-    );
-    // Reuse the same native worker's process-group forwarding and escalation.
-    // Pass the filtered environment exactly, never merge ambient workflow secrets.
-    const worker = spawnSync(process.execPath, [OPENCLAW_PROCESS_WORKER_PATH, workerOptionsPath], {
-      cwd: params.options.cwd,
-      env: params.childEnv,
-      stdio: "ignore",
-      timeout: timeoutMs + 10_000,
-    });
-    if (worker.error || !existsSync(resultPath)) return undefined;
-    const exported = deserializeResult(JSON.parse(readFileSync(resultPath, "utf8")));
-    if (exported.error || exported.status !== 0) return undefined;
-    const summary: unknown = JSON.parse(readFileSync(stdoutPath, "utf8"));
-    if (!isRecord(summary) || summary.sessionId !== params.sessionId) return undefined;
-    const exportDir = join(params.stateDir, ".openclaw", "trajectory-exports", "checkout-receipt");
-    const eventPath = join(exportDir, "events.jsonl");
-    if (statSync(eventPath).size > 1024 * 1024) return undefined;
-    const manifest = JSON.parse(readFileSync(join(exportDir, "manifest.json"), "utf8"));
-    const events: unknown[] = readFileSync(eventPath, "utf8")
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line));
-    if (
-      !isRecord(manifest) ||
-      manifest.sessionId !== params.sessionId ||
-      manifest.eventCount !== events.length ||
-      (manifest.warnings !== undefined &&
-        (!Array.isArray(manifest.warnings) || manifest.warnings.length > 0))
-    )
-      return undefined;
-    const entries: unknown[] = [];
-    for (const event of events) {
-      if (
-        !isRecord(event) ||
-        event.traceSchema !== "openclaw-trajectory" ||
-        event.schemaVersion !== 1 ||
-        event.sessionId !== params.sessionId
-      )
-        return undefined;
-      if (event.source !== "transcript") continue;
-      if (!isRecord(event.data)) continue;
-      if (event.type === "tool.call")
-        entries.push({
-          message: {
-            role: "assistant",
-            content: [
-              {
-                type: "toolCall",
-                id: event.data.toolCallId,
-                name: event.data.name,
-                arguments: restoreExportedReadPath(event.data.arguments, params),
-              },
-            ],
-          },
-        });
-      if (event.type === "tool.result") entries.push({ message: event.data.message });
-    }
-    return entries;
-  } catch {
-    return undefined;
-  }
-}
-
-function restoreExportedReadPath(
-  args: unknown,
-  params: { stateDir: string; childEnv: NodeJS.ProcessEnv },
-): unknown {
-  if (!isRecord(args) || typeof args.path !== "string") return args;
-  // The native exporter redacts absolute paths. Restore only its known prefixes
-  // from this exact child environment; legacy JSONL receipts stay untouched.
-  const prefix = /^(~|\$WORKSPACE_DIR|\$OPENCLAW_STATE_DIR)(?=$|[/\\])/.exec(args.path);
-  if (!prefix) return args;
-  const roots = new Set(
-    (prefix[1] === "~" ? [params.childEnv.HOME, params.childEnv.USERPROFILE] : [params.stateDir])
-      .filter((value): value is string => Boolean(value))
-      .map((value) => resolve(value)),
-  );
-  // HOME and USERPROFILE share the same exported label. Never guess when the
-  // redaction loses which of two different roots the successful read used.
-  if (roots.size !== 1) return undefined;
-  const root = [...roots][0]!;
-  return { ...args, path: resolve(root + args.path.slice(prefix[0].length)) };
-}
-
 function hasSuccessfulReadReceipt(options: {
   cwd: string;
-  entries?: unknown[] | undefined;
+  transcriptPath: string;
   expectedPath: string;
 }): boolean {
-  if (!options.entries) return false;
+  let transcript: string;
+  try {
+    transcript = readFileSync(options.transcriptPath, "utf8");
+  } catch {
+    return false;
+  }
   const readCalls = new Map<string, { matchesExpectedPath: boolean; resolved: boolean }>();
   let challengedReadSucceeded = false;
-  for (const entry of options.entries) {
+  for (const line of transcript.split("\n")) {
+    if (!line.trim()) continue;
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      return false;
+    }
     if (!isRecord(entry) || !isRecord(entry.message)) continue;
     const message = entry.message;
     if (message.role === "assistant" && Array.isArray(message.content)) {
@@ -513,7 +383,6 @@ const OPENCLAW_CHILD_ENV_ALLOWLIST = [
   // Base OS/tooling surface the CLI needs to run.
   "PATH",
   "HOME",
-  "USERPROFILE",
   "USER",
   "SHELL",
   "LANG",
@@ -521,8 +390,6 @@ const OPENCLAW_CHILD_ENV_ALLOWLIST = [
   "TMPDIR",
   "TERM",
   "NODE_OPTIONS",
-  // Keep host-provided TLS roots for managed/corporate egress; verification stays enabled.
-  "NODE_EXTRA_CA_CERTS",
   "HTTP_PROXY",
   "HTTPS_PROXY",
   "NO_PROXY",

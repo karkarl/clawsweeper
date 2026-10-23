@@ -9,11 +9,6 @@ import {
   type PrepareReviewDependencies,
 } from "./clawsweeper-review-preparation.js";
 import {
-  loadLocalRepositoryReviewConfig,
-  repositoryReviewContentDigest,
-  type RepositoryReviewConfig,
-} from "./repository-review-config.js";
-import {
   runPreparedReviewItem,
   writePreparedReviewReport,
   type PreparedReviewDependencies,
@@ -77,7 +72,6 @@ export function runLocalRangeReview(args: Args, dependencies: LocalRangeCommandD
   } = preparation;
   if (!localRangeData) throw new UserFacingCommandError("Local review requires --local-range.");
   const { item, context } = localRangeData;
-  let repositoryReview: RepositoryReviewConfig | undefined;
   const {
     results: localOutputResults,
     writeReport,
@@ -106,10 +100,6 @@ export function runLocalRangeReview(args: Args, dependencies: LocalRangeCommandD
     outputEmitted = true;
   };
   try {
-    repositoryReview = loadLocalRepositoryReviewConfig(
-      openclawDir,
-      stringArg(args.base, "") || "origin/main",
-    );
     const reviewTreesDir = join(realpathSync(reviewWorkspaceDir), "review-trees");
     if (readonlyOpenclaw) dependencies.makeTreeReadOnly(openclawDir, readonlyModeSnapshots);
     assertCurrentOutputBudget();
@@ -165,10 +155,7 @@ export function runLocalRangeReview(args: Args, dependencies: LocalRangeCommandD
     // Keep the native synthetic item's timestamp and identity before hashing.
     const contextUpdatedAt = (context.issue as { updatedAt?: string }).updatedAt;
     if (contextUpdatedAt) item.updatedAt = contextUpdatedAt;
-    const contentDigest = repositoryReviewContentDigest(
-      dependencies.itemContentDigest(item, context, git),
-      repositoryReview,
-    );
+    const contentDigest = dependencies.itemContentDigest(item, context, git);
     const result = runPreparedReviewItem(
       {
         item,
@@ -178,7 +165,6 @@ export function runLocalRangeReview(args: Args, dependencies: LocalRangeCommandD
         sandboxMode,
         localOnly: true,
         localRange: true,
-        ...(repositoryReview ? { repositoryReview } : {}),
         reviewOpenclawDir: openclawDir,
         reviewTreesDir,
         additionalPrompt,

@@ -1,33 +1,20 @@
 import { randomInt } from "node:crypto";
-import { UserFacingCommandError } from "./command.js";
 import { spawnSync } from "node:child_process";
 import { lstatSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join } from "node:path";
 import { codexModelArgs, redactInternalCodexModel } from "./codex-env.js";
 import { runCodexProcess, type CodexProcessResult } from "./codex-process.js";
 import { runOpenclawProcess } from "./openclaw-process.js";
 import { AgentInputScanError, scanAgentInput, type AgentScanSource } from "./agent-input-scan.js";
 import type { DecisionRepairOptions } from "./review-decision-repair.js";
-import {
-  materializeNativeReviewSkills,
-  type RepositoryReviewConfig,
-} from "./repository-review-config.js";
 
 export type AgentRunner = "codex" | "openclaw";
-
-export class ReviewPromptBudgetError extends UserFacingCommandError {
-  constructor(bytes: number) {
-    super(`Review prompt exceeded its ${bytes}-byte output budget.`);
-    this.name = "ReviewPromptBudgetError";
-  }
-}
 
 export interface RunAgentProcessOptions {
   label: string;
   prompt: string;
   // Generated diagnostic copy only; never an original input or requested export.
   diagnosticPromptPath?: string;
-  promptFileBytes?: number;
   scanSource: AgentScanSource;
   model: string;
   reasoningEffort?: string;
@@ -42,8 +29,6 @@ export interface RunAgentProcessOptions {
   codexExtraArgs?: readonly string[];
   // Codex only: one repair turn on the same thread when the final decision fails validation.
   decisionRepair?: DecisionRepairOptions;
-  repositoryReview?: RepositoryReviewConfig;
-  nativeWorkspace?: { cwd: string; prompt: string };
 }
 
 export function agentRunner(env: NodeJS.ProcessEnv = process.env): AgentRunner {
@@ -75,10 +60,6 @@ export function reviewNetworkCapability(
 export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessResult {
   if (options.diagnosticPromptPath) rmSync(options.diagnosticPromptPath, { force: true });
   const runner = agentRunner(options.env);
-  if (runner === "openclaw" && options.repositoryReview?.skills.length && !options.nativeWorkspace)
-    throw new Error(
-      "Selected OpenClaw skills require an isolated owned native workspace; no skill workflow ran.",
-    );
   if (runner === "openclaw") openclawModel(options.env);
   const startedAt = Date.now();
   const outputPath = codexOutputLastMessagePath(options.codexExtraArgs);
@@ -100,98 +81,53 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
     source: options.scanSource,
     timeoutMs: options.timeoutMs,
     ...(schemaPath ? { schemaPath } : {}),
-    ...(options.repositoryReview
-      ? {
-          additionalBytes: [
-            Buffer.from(options.repositoryReview.configText),
-            Buffer.from(options.repositoryReview.additionalPrompt),
-            ...options.repositoryReview.files.map((file) => Buffer.from(file.text)),
-          ],
-        }
-      : {}),
   });
-  if (options.repositoryReview?.additionalPrompt) {
-    options = {
-      ...options,
-      prompt:
-        options.prompt +
-        "\n\n## Repository additional instructions (subordinate to the review contract)\n" +
-        options.repositoryReview.additionalPrompt,
-    };
-  }
-  if (runner === "openclaw" && options.nativeWorkspace)
-    options = { ...options, prompt: options.prompt + "\n\n" + options.nativeWorkspace.prompt };
   // OpenClaw has no structured-output option, so it reads the same schema file that Codex
   // receives through --output-schema as a prompt section.
   const prompt =
     runner === "openclaw" && schemaPath
       ? `${options.prompt.trimEnd()}\n\n## Output schema\n\nReturn one JSON object that matches this JSON Schema. The field descriptions are part of the review contract.\n\n\`\`\`json\n${readFileSync(schemaPath, "utf8").trim()}\n\`\`\`\n`
       : options.prompt;
+  if (options.diagnosticPromptPath) {
+    writeFileSync(options.diagnosticPromptPath, prompt, { mode: 0o600, flag: "wx" });
+  }
   options = { ...options, timeoutMs: options.timeoutMs - (Date.now() - startedAt) };
   if (options.timeoutMs <= 0) {
     if (options.diagnosticPromptPath) rmSync(options.diagnosticPromptPath, { force: true });
     throw new AgentInputScanError("deadline");
   }
   if (runner === "codex") {
-    const native = options.repositoryReview?.skills.length
-      ? materializeNativeReviewSkills(options.repositoryReview, options.cwd)
-      : undefined;
-    try {
-      if (native) {
-        const extraArgs = [...(options.codexExtraArgs ?? [])];
-        for (let i = 0; i < extraArgs.length; i++) {
-          if (extraArgs[i] === "-C" || extraArgs[i] === "--cd") extraArgs[++i] = native.cwd;
-        }
-        const stdin = extraArgs.at(-1) === "-" ? extraArgs.pop() : undefined;
-        extraArgs.push("--skip-git-repo-check", "-c", "project_root_markers=[]");
-        if (stdin) extraArgs.push(stdin);
-        options = {
-          ...options,
-          cwd: native.cwd,
-          prompt: options.prompt + "\n\n" + native.prompt,
-          codexExtraArgs: extraArgs,
-        };
-      }
-      retainDiagnosticPrompt(options, options.prompt);
-      const args = codexAgentArgs(options);
-      const managedOutput =
-        options.outputLastMessageBytes !== undefined && outputPath !== undefined;
-      return runCodexProcess({
-        args: managedOutput ? managedCodexStdoutArgs(args) : args,
-        cwd: options.cwd,
-        env: options.env,
-        input: options.prompt,
-        timeoutMs: options.timeoutMs,
-        ...(options.tailBytes === undefined ? {} : { tailBytes: options.tailBytes }),
-        ...(options.outputFileBytes === undefined
-          ? {}
-          : { outputFileBytes: options.outputFileBytes }),
-        ...(managedOutput
-          ? {
-              outputLastMessagePath: outputPath,
-              outputLastMessageBytes: options.outputLastMessageBytes,
-            }
-          : {}),
-        ...(options.stdoutPath ? { stdoutPath: options.stdoutPath } : {}),
-        ...(options.stderrPath ? { stderrPath: options.stderrPath } : {}),
-        ...(options.decisionRepair ? { decisionRepair: options.decisionRepair } : {}),
-      });
-    } finally {
-      native?.cleanup();
-    }
+    const args = codexAgentArgs(options);
+    const managedOutput = options.outputLastMessageBytes !== undefined && outputPath !== undefined;
+    return runCodexProcess({
+      args: managedOutput ? managedCodexStdoutArgs(args) : args,
+      cwd: options.cwd,
+      env: options.env,
+      input: options.prompt,
+      timeoutMs: options.timeoutMs,
+      ...(options.tailBytes === undefined ? {} : { tailBytes: options.tailBytes }),
+      ...(options.outputFileBytes === undefined
+        ? {}
+        : { outputFileBytes: options.outputFileBytes }),
+      ...(managedOutput
+        ? {
+            outputLastMessagePath: outputPath,
+            outputLastMessageBytes: options.outputLastMessageBytes,
+          }
+        : {}),
+      ...(options.stdoutPath ? { stdoutPath: options.stdoutPath } : {}),
+      ...(options.stderrPath ? { stderrPath: options.stderrPath } : {}),
+      ...(options.decisionRepair ? { decisionRepair: options.decisionRepair } : {}),
+    });
   }
 
-  retainDiagnosticPrompt(options, prompt);
   const model = openclawModel(options.env);
   const rawResult = runOpenclawProcess({
     label: options.label,
     prompt,
     model,
     ...(options.reasoningEffort?.trim() ? { reasoningEffort: options.reasoningEffort.trim() } : {}),
-    cwd: options.nativeWorkspace?.cwd ?? options.cwd,
-    ...(options.nativeWorkspace
-      ? { skillFilter: options.repositoryReview!.skills.map((skill) => skill.name) }
-      : {}),
+    cwd: options.cwd,
     env: options.env,
     timeoutMs: options.timeoutMs,
     ...(options.tailBytes === undefined ? {} : { tailBytes: options.tailBytes }),
@@ -223,17 +159,6 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
   return result;
 }
 
-function retainDiagnosticPrompt(options: RunAgentProcessOptions, prompt: string): void {
-  if (
-    options.promptFileBytes !== undefined &&
-    options.promptFileBytes > 0 &&
-    Buffer.byteLength(prompt) > options.promptFileBytes
-  )
-    throw new ReviewPromptBudgetError(options.promptFileBytes);
-  if (options.diagnosticPromptPath)
-    writeFileSync(options.diagnosticPromptPath, prompt, { mode: 0o600, flag: "wx" });
-}
-
 export function runAgentCheckoutInspection(options: {
   cwd: string;
   env: NodeJS.ProcessEnv;
@@ -241,8 +166,6 @@ export function runAgentCheckoutInspection(options: {
   scanSource: AgentScanSource;
   initialPrompt: string;
   schemaPath?: string;
-  nativeWorkspace?: string;
-  disableSkills?: boolean;
 }): CodexProcessResult {
   const deadlineAt = Date.now() + options.timeoutMs;
   const remainingMs = () => {
@@ -277,12 +200,9 @@ export function runAgentCheckoutInspection(options: {
         new Error("Checkout inspection could not select a tracked text line."),
       );
     }
-    const challengePath = options.nativeWorkspace
-      ? relative(options.nativeWorkspace, join(options.cwd, challenge.path))
-      : challenge.path;
     const prompt = [
       "Use the read tool to inspect the workspace-relative file below.",
-      `Path: ${JSON.stringify(challengePath)}`,
+      `Path: ${JSON.stringify(challenge.path)}`,
       `Return exactly line ${challenge.lineNumber} with surrounding whitespace removed.`,
       "Do not add quotes, code fences, or commentary.",
     ].join("\n");
@@ -298,11 +218,10 @@ export function runAgentCheckoutInspection(options: {
       label: "checkout-inspection",
       prompt,
       model: openclawModel(env),
-      cwd: options.nativeWorkspace ?? options.cwd,
-      ...(options.nativeWorkspace || options.disableSkills ? { skillFilter: [] } : {}),
+      cwd: options.cwd,
       env,
       timeoutMs: Math.min(remainingMs(), 30_000),
-      checkoutInspection: { expectedText: challenge.text, expectedPath: challengePath },
+      checkoutInspection: { expectedText: challenge.text, expectedPath: challenge.path },
     });
   }
   scanAgentInput({
